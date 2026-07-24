@@ -63,12 +63,14 @@ class Store:
             pl.col("uniprot").fill_null("").str.to_lowercase().alias("_uniprot_lc"),
             pl.col("aliases").fill_null("").str.to_lowercase().alias("_aliases_lc"),
         )
-        # symbol -> uniprot / description, for gene-page metadata
+        # symbol -> uniprot / description / function, for gene-page metadata.
+        # uniprot_function is optional (older parquet may predate the column).
+        meta_cols = ["symbol", "uniprot", "description"]
+        if "uniprot_function" in genes.columns:
+            meta_cols.append("uniprot_function")
         self._by_symbol = {
             r["symbol"]: r
-            for r in genes.select(["symbol", "uniprot", "description"]).iter_rows(
-                named=True
-            )
+            for r in genes.select(meta_cols).iter_rows(named=True)
         }
         # sets of symbols present in each modality, for "has data" flags
         self._symbols_in = {
@@ -121,6 +123,7 @@ class Store:
             "symbol": r["symbol"],
             "uniprot": r["uniprot"],
             "description": r["description"],
+            "uniprot_function": r.get("uniprot_function") or "",
             "modalities": self.modalities_for(symbol),
         }
 

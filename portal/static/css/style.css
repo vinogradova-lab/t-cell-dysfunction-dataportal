@@ -125,6 +125,40 @@ main.wrap { padding-top: 28px; padding-bottom: 40px; }
 .gene-header h2 { margin: 0 0 2px; font-size: 1.5rem; }
 .gene-desc { margin: 0 0 4px; font-size: 1rem; }
 .muted { color: var(--muted); font-size: .9rem; margin: 2px 0; }
+.gene-function {
+  margin: 8px 0 0;
+  max-width: 720px;
+  font-size: .9rem;
+  line-height: 1.45;
+  color: var(--muted);
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+}
+.gene-function .fn-label {
+  display: block;
+  font-size: .72rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.gene-function .fn-text { display: block; }
+.gene-function .fn-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.fn-toggle {
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: .8rem;
+  cursor: pointer;
+}
+.fn-toggle:hover { text-decoration: underline; }
 .gene-header a { color: var(--accent); }
 .error { color: #b23b3b; }
 

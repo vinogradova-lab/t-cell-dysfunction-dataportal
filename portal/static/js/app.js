@@ -195,6 +195,32 @@ async function selectGene(symbol, updateUrl = true) {
     return;
   }
 
+  // UniProt function summary rides in the bundle (kept out of the always-loaded
+  // search index because it's large). Pipe-delimited multi-entry text -> spaces.
+  const fn = (bundle.uniprot_function || "").replace(/\|/g, " ").trim();
+  if (fn) {
+    const p = document.createElement("p");
+    p.className = "gene-function";
+    p.innerHTML = `<span class="fn-label">Function</span>`;
+    const text = document.createElement("span");
+    text.className = "fn-text clamped";
+    text.textContent = fn;
+    p.appendChild(text);
+    geneHeader.appendChild(p);
+    // only offer a toggle when the text actually overflows the clamp
+    if (text.scrollHeight - text.clientHeight > 4) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fn-toggle";
+      btn.textContent = "Show more";
+      btn.addEventListener("click", () => {
+        const clamped = text.classList.toggle("clamped");
+        btn.textContent = clamped ? "Show more" : "Show less";
+      });
+      p.appendChild(btn);
+    }
+  }
+
   for (const m of available) {
     const fig = bundle[m];
     if (!fig) continue; // modality present in index but empty slice

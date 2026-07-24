@@ -95,7 +95,7 @@ def write_gene_bundles(
     total = len(todo)
     for i, r in enumerate(todo, 1):
         symbol = r["symbol"]
-        bundle: dict[str, dict | None] = {}
+        bundle: dict[str, dict | str | None] = {}
         for m in MODALITIES:
             df = store.slice(m, symbol)
             if df.is_empty():
@@ -103,6 +103,11 @@ def write_gene_bundles(
             else:
                 fig = BUILDERS[m](df, symbol, store.replicates(m, symbol))
                 bundle[m] = _fig_json(fig)
+        # per-gene metadata carried alongside the figures (not a modality, so the
+        # frontend's modality loop ignores it); kept out of the always-loaded
+        # genes.json index because the function text is large.
+        meta = store.gene_meta(symbol)
+        bundle["uniprot_function"] = (meta or {}).get("uniprot_function", "")
         (gene_dir / f"{r['key']}.json").write_text(
             json.dumps(bundle, separators=(",", ":"))
         )

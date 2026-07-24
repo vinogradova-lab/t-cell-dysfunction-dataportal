@@ -18,6 +18,9 @@ import pandas as pd
 
 PORTAL_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = PORTAL_ROOT / "source"
+# uniprot -> function summary, built offline by scripts/build_uniprot_functions.py
+# (workbook + UniProt API) and committed so CI stays offline.
+UNIPROT_FUNCTIONS_CSV = PORTAL_ROOT / "data" / "uniprot_functions.csv"
 
 
 def _clean_description(desc: str) -> str:
@@ -43,6 +46,22 @@ def _load_geneid2nt() -> dict:
     return getattr(module, "GENEID2NT", {})
 
 
+def _load_uniprot_functions() -> dict[str, str]:
+    """Return uniprot -> function summary from the committed CSV.
+
+    Empty-string rows (accessions UniProt has no FUNCTION for) are dropped so a
+    missing key uniformly means "no function to show". Absent CSV degrades
+    gracefully to an empty map — the function line is simply omitted."""
+    if not UNIPROT_FUNCTIONS_CSV.exists():
+        return {}
+    df = pd.read_csv(UNIPROT_FUNCTIONS_CSV, keep_default_na=False)
+    return {
+        str(u): str(f)
+        for u, f in zip(df["uniprot"], df["uniprot_function"])
+        if str(f).strip()
+    }
+
+
 def _symbol_lookup(geneid2nt: dict) -> dict:
     """Return symbol -> {aliases, description}."""
     by_symbol: dict[str, dict] = {}
@@ -59,6 +78,7 @@ def build_gene_registry(seed: pd.DataFrame) -> pd.DataFrame:
     per protein/gene we have data for (dedup handled here).
     """
     by_symbol = _symbol_lookup(_load_geneid2nt())
+    functions = _load_uniprot_functions()
 
     seed = (
         seed.dropna(subset=["symbol"])
@@ -76,13 +96,16 @@ def build_gene_registry(seed: pd.DataFrame) -> pd.DataFrame:
         description = _clean_description(r.get("description"))
         if not description:
             description = info.get("description", "")
+        uniprot = r.get("uniprot")
         rows.append(
             {
-                "uniprot": r.get("uniprot"),
+                "uniprot": uniprot,
                 "symbol": symbol,
                 "description": description,
                 # pipe-delimited, searchable
                 "aliases": "|".join(aliases),
+                # UniProt function summary (empty when unavailable)
+                "uniprot_function": functions.get(str(uniprot), ""),
             }
         )
     return pd.DataFrame(rows)

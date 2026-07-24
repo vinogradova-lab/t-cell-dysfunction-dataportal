@@ -18,7 +18,6 @@ from palette import (
     ATP_SYMBOLS,
     EXHAUSTION_COLS,
     FC_CUTOFF,
-    FIVE_CONDITION_ORDER,
     FONT_FAMILY,
     FOUR_CONDITION_ORDER,
     PVAL_CUTOFF,
@@ -176,8 +175,15 @@ def proteome_figure(
 ) -> go.Figure:
     if df.is_empty():
         return _empty("No whole-proteome data")
+    # Drop the D2 bar: D2 is the normalization reference (percent-of-control -> log2FC
+    # ≈ 0), so its flat bar carries no information. D2 stays in the underlying data
+    # (it's the denominator); we only omit it from the rendered bars/points here.
+    # FOUR_CONDITION_ORDER is exactly the proteome conditions minus D2.
+    df = df.filter(pl.col("condition") != "D2")
+    if reps_df is not None:
+        reps_df = reps_df.filter(pl.col("condition") != "D2")
     return _abundance_bar(
-        df, FIVE_CONDITION_ORDER,
+        df, FOUR_CONDITION_ORDER,
         yaxis="protein abundance, log₂(FC from D2)",
         hover_extra="<br>%{customdata.percent_control:.1f}% of control",
         reps_df=reps_df,
