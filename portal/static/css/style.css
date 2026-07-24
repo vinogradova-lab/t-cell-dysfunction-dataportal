@@ -173,6 +173,7 @@ main.wrap { padding-top: 28px; padding-bottom: 40px; }
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 10px;
+  min-width: 0; /* grid item: allow shrink below plot's intrinsic width */
 }
 .chart-title {
   margin: 6px 8px 2px;

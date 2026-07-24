@@ -221,6 +221,14 @@ async function selectGene(symbol, updateUrl = true) {
     }
   }
 
+  // Two passes on purpose: build & append EVERY card first, then render. The
+  // charts grid is `repeat(auto-fit, minmax(440px, 1fr))`, so a lone card fills
+  // the whole row — rendering a plot inline (before its siblings exist) sizes it
+  // to the full-width row, and Plotly's `responsive` only re-fits on window
+  // resize, so the first plot stayed ~2x its final card and its right-hand bars
+  // spilled behind the next card. Appending all cards first means each plot
+  // measures its final multi-column track width. Do NOT collapse back into one loop.
+  const pending = [];
   for (const m of available) {
     const fig = bundle[m];
     if (!fig) continue; // modality present in index but empty slice
@@ -235,6 +243,9 @@ async function selectGene(symbol, updateUrl = true) {
     plot.id = `plot-${m}`;
     card.appendChild(plot);
     chartsEl.appendChild(card);
+    pending.push({ plot, fig, m });
+  }
+  for (const { plot, fig, m } of pending) {
     Plotly.newPlot(plot, fig.data, fig.layout, {
       ...PLOT_OPTS,
       toImageButtonOptions: { format: "svg", filename: `${symbol}_${m}` },
