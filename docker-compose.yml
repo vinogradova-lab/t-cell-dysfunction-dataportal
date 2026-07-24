@@ -1,0 +1,23 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tcell-portal-web
+    restart: unless-stopped
+    expose:
+      - "8000"
+    # read-only container FS; the app never writes anything at runtime
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro

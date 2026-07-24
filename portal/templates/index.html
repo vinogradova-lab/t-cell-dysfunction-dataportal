@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>T cell dysfunction data portal</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="{{ url_for('static', filename='vendor/plotly.min.js') }}"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-grid">
+      <div class="header-lede">
+        <h1>T cell dysfunction data portal</h1>
+        <p class="tagline">
+          Search a gene or protein to view its transcriptomic, whole-proteome, and
+          cysteine-reactivity changes across T cell dysfunction conditions.
+        </p>
+      </div>
+      <figure class="header-schematic">
+        <img src="{{ url_for('static', filename='img/schematic.svg') }}"
+             alt="Experimental schematic: T cells activated with αCD3/αCD28 and
+                  cultured under acute or chronic stimulation with IL-7/IL-15,
+                  sampled across the dysfunction time course." />
+      </figure>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="search-block">
+      <div class="search-box">
+        <input id="search" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Gene symbol, alias, or UniProt accession (e.g. MAP2K4, P45985)" />
+        <ul id="suggestions" class="suggestions" hidden></ul>
+      </div>
+      <p class="hint">Try <button class="example" data-gene="MAP2K4">MAP2K4</button>,
+        <button class="example" data-gene="GCN1">GCN1</button>,
+        <button class="example" data-gene="HSPA9">HSPA9</button></p>
+    </section>
+
+    <section id="gene-view" hidden>
+      <div id="gene-header" class="gene-header"></div>
+      <div id="charts" class="charts"></div>
+    </section>
+
+    <section id="volcano-section" class="volcano">
+      <div class="volcano-head">
+        <div>
+          <h2>Whole-proteome volcano</h2>
+          <p class="muted">Differential protein abundance vs D2 across the
+            proteome. Each point is a protein; click one to open its per-gene
+            view. Dashed guides mark ±1.5-fold and p&nbsp;=&nbsp;0.05.</p>
+        </div>
+        <label class="volcano-picker">
+          <span>Comparison</span>
+          <select id="volcano-comparison"></select>
+        </label>
+      </div>
+      <div id="volcano-plot" class="plot volcano-plot"></div>
+    </section>
+
+    <section id="downloads" class="downloads">
+      <h2>Bulk download</h2>
+      <p class="muted">Full processed data (log₂ fold-change from D2), as CSV.</p>
+      <div id="downloads-list" class="downloads-list"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>Data from the T cell dysfunction study. Conditions: D2 (baseline),
+        D4/D8 &times; Acute (A) / Chronic (C).
+        Reactivity ATP add-back adds ±ATP variants.</p>
+    </div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
