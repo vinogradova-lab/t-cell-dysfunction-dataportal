@@ -31,6 +31,30 @@ body {
 .site-header h1 { margin: 0 0 6px; font-size: 1.7rem; letter-spacing: -.01em; }
 .tagline { margin: 0; max-width: 380px; opacity: .92; font-size: .98rem; }
 
+.header-links { margin: 12px 0 0; }
+/* pill rather than a bare link: it has to read as a target against the
+   gradient, where a plain underline washes out */
+.manuscript-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .55);
+  background: rgba(255, 255, 255, .12);
+  color: #fff;
+  font-size: .92rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+.manuscript-link:hover,
+.manuscript-link:focus-visible {
+  background: rgba(255, 255, 255, .22);
+  border-color: rgba(255, 255, 255, .85);
+}
+.manuscript-link span { font-size: .85em; opacity: .85; }
+
 /* Two-column header: lede on the left, data-generation schematic on the right */
 .header-grid {
   display: grid;

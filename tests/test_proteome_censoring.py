@@ -143,9 +143,9 @@ def test_aggregate_and_replicates_agree_on_which_replicates_count(stub):
         assert r["n_reps"] == donors.get((r["uniprot"], r["condition"]), 0)
         assert np.isfinite(r["log2fc"])
 
-    d8c = agg[agg["condition"] == "D8C"].iloc[0]
-    assert d8c["censored"]
-    assert not agg[agg["condition"] == "D4C"].iloc[0]["censored"]
+    # the flag drives the censoring internally but is not a published column
+    assert "censored" not in agg.columns
+    assert "censored" not in reps.columns
 
 
 def test_overlay_splits_each_donor_into_two_channels(stub):

@@ -286,6 +286,9 @@ def build_proteome_replicates() -> pd.DataFrame:
     ``bio_rep`` is retained so donor-level consumers — notably the bulk-download
     reconstruction in ``etl/prerender.py`` — can recover per-donor values by
     averaging a channel pair.
+
+    The per-channel ``censored`` flag is used internally but not published: it
+    fires on too few cells to be worth a column in every consumer.
     """
     out = _s2_1_channel_pct().copy()  # cached frame; don't mutate in place
     out["log2fc"] = _pct_to_log2fc(out["percent_control"])
@@ -296,7 +299,7 @@ def build_proteome_replicates() -> pd.DataFrame:
     out = out.sort_values(["symbol", "condition", "rep"])
     return out[
         ["uniprot", "symbol", "condition", "rep", "bio_rep", "percent_control",
-         "log2fc", "censored"]
+         "log2fc"]
     ]
 
 
@@ -349,10 +352,9 @@ def build_proteome() -> pd.DataFrame:
     channel-level overlay in :func:`build_proteome_replicates` — ``n_reps``
     counts donors, which is the meaningful confidence signal.
 
-    ``censored`` marks conditions where at least one donor was a
-    below-detection bound rather than a measurement, and
-    ``d2_below_detection`` the stronger case where the D2 reference itself was
-    missing (which also removes the comparison from the volcano). Both are
+    ``d2_below_detection`` marks the conditions where the D2 reference itself
+    was missing, which makes the fold change a lower bound and removes the
+    comparison from the volcano. Together with ``n_reps`` these are the
     thin-evidence signals worth surfacing: one protein, AFAP1L2, rests on a
     single usable donor.
     """
@@ -360,7 +362,6 @@ def build_proteome() -> pd.DataFrame:
     agg = reps.groupby(["uniprot", "symbol", "condition"], as_index=False).agg(
         percent_control=("percent_control", "mean"),
         n_reps=("percent_control", "size"),
-        censored=("censored", "any"),
     )
     agg["log2fc"] = _pct_to_log2fc(agg["percent_control"])
     agg = agg.merge(_d2_below_detection(), on=["uniprot", "condition"], how="left")
@@ -371,7 +372,7 @@ def build_proteome() -> pd.DataFrame:
     agg = agg.sort_values(["symbol", "condition"])
     return agg[
         ["uniprot", "symbol", "condition", "percent_control", "log2fc",
-         "n_reps", "censored", "d2_below_detection"]
+         "n_reps", "d2_below_detection"]
     ]
 
 

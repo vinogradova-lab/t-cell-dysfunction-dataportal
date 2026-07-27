@@ -37,8 +37,8 @@ most proteins.
 
 In the whole proteome, a TMT channel reading exactly 0 means *below detection*,
 not *absent*: those channels are censored at the replicate's limit of detection
-(1st percentile of its positive census values) and flagged `censored`, so the
-value is a bound rather than a point estimate. Channels where both the condition
+(1st percentile of its positive census values), so the value is a bound rather
+than a point estimate. Channels where both the condition
 and its D2 reference were empty carry no information and are dropped. `n_reps`
 records how many donors backed each aggregate — one protein (AFAP1L2) rests
 on a single usable donor.

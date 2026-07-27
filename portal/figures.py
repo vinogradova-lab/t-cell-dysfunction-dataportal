@@ -182,18 +182,16 @@ def _abundance_bar(
     return fig
 
 
-def _evidence_note(
-    df: pl.DataFrame, reps_df: pl.DataFrame | None = None
-) -> str | None:
-    """Caveat for whole-proteome bars resting on thin or censored evidence.
+def _evidence_note(df: pl.DataFrame) -> str | None:
+    """Caveat for whole-proteome bars resting on thin evidence.
 
     Silent for the ordinary case. Names the volcano omission when a D2
     reference was missing, so the per-gene view and the dataset-wide view don't
     appear to disagree for no reason.
 
-    Censoring is read from ``reps_df`` rather than the aggregate: the bars are
-    drawn from the channel-level points, and a dead channel in an otherwise
-    healthy donor shows up there but not in the donor-level aggregate.
+    Deliberately says nothing about ordinary below-detection censoring: that
+    fires on enough proteins to read as noise, and the ``censored`` flag is
+    still carried in the parquet and the bulk download for anyone who needs it.
     """
     parts: list[str] = []
     if "d2_below_detection" in df.columns:
@@ -207,15 +205,6 @@ def _evidence_note(
         thin = df.filter(pl.col("n_reps") < 2)["condition"].to_list()
         if thin:
             parts.append(f"single donor in {', '.join(thin)}")
-    src = reps_df if _has_reps(reps_df) and "censored" in reps_df.columns else df
-    if "censored" in src.columns:
-        conds = [
-            c for c in src.filter(pl.col("censored"))["condition"].unique().to_list()
-            if c not in "".join(parts)
-        ]
-        if conds:
-            order = [c for c in FOUR_CONDITION_ORDER if c in conds]
-            parts.append(f"below-detection channel censored in {', '.join(order)}")
     return "⚠ " + "; ".join(parts) if parts else None
 
 
@@ -237,7 +226,7 @@ def proteome_figure(
         hover_extra="<br>%{customdata.percent_control:.1f}% of control"
                     "<br>%{customdata.n_reps} donor(s)",
         reps_df=reps_df,
-        note=_evidence_note(df, reps_df),
+        note=_evidence_note(df),
     )
 
 
