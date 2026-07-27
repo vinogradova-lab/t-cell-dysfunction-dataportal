@@ -7,6 +7,8 @@ manuscript palette (``palette.py``) so the portal matches the published look.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
@@ -41,6 +43,12 @@ _BASE_LAYOUT = dict(
 # a bit more top room when a horizontal legend sits above the plot
 _LEGEND_TOP_MARGIN = dict(l=64, r=20, t=34, b=50)
 
+# SEM error bars on the abundance bars. Plotly sizes both of these in px, so
+# the cap can't track bar width the way ggplot's category-relative
+# ``width = 0.4`` does; this reads proportionate at the portal's chart sizes.
+ERROR_BAR_LINE_WIDTH = 0.25
+ERROR_BAR_CAP_WIDTH = 8
+
 
 def _empty(msg: str) -> go.Figure:
     fig = go.Figure()
@@ -74,6 +82,41 @@ def _replicate_means(reps_df: pl.DataFrame, order: list[str]) -> dict[str, float
     """condition -> mean replicate log2FC, so bars center on the overlaid points."""
     agg = reps_df.group_by("condition").agg(pl.col("log2fc").mean().alias("m"))
     return {r["condition"]: r["m"] for r in agg.iter_rows(named=True) if r["condition"] in order}
+
+
+def _replicate_sem(reps_df: pl.DataFrame, order: list[str]) -> dict[str, float]:
+    """condition -> standard error of the mean replicate log2FC (sd/sqrt(n)).
+
+    Mirrors the manuscript's ``geom_errorbar`` in whole_proteome_visualization.Rmd
+    and rna_visualization.Rmd, which pool every replicate column for a condition
+    (6 donors x 2 technical channels for the proteome) and take sd/sqrt(n) — so
+    the bar describes the same points the overlay draws.
+
+    Computed on log2FC rather than the manuscript's percent-of-control because
+    that is the axis here; an error bar has to match the scale it is drawn on.
+    Conditions with n < 2 have no defined sd and are omitted.
+    """
+    agg = reps_df.group_by("condition").agg(
+        pl.col("log2fc").std().alias("sd"), pl.len().alias("n")
+    )
+    return {
+        r["condition"]: r["sd"] / math.sqrt(r["n"])
+        for r in agg.iter_rows(named=True)
+        if r["condition"] in order and r["n"] > 1 and r["sd"] is not None
+    }
+
+
+def _error_y(sems: dict[str, float], conditions: list[str]) -> dict:
+    """SEM error bars for a bar trace. ``None`` leaves single-replicate
+    conditions with no bar rather than a misleading zero-length one."""
+    return dict(
+        type="data",
+        array=[sems.get(c) for c in conditions],
+        visible=True,
+        color="#333",
+        thickness=ERROR_BAR_LINE_WIDTH,
+        width=ERROR_BAR_CAP_WIDTH,
+    )
 
 
 def _add_replicate_points(fig: go.Figure, reps_df: pl.DataFrame, order: list[str]) -> None:
@@ -144,6 +187,10 @@ def _abundance_bar(
                 row["percent_control"] = pct_means[c]
     values = [row["log2fc"] for row in rows]
     colors = [EXHAUSTION_COLS.get(c, "#888") for c in conditions]
+    error_y = (
+        _error_y(_replicate_sem(reps_df, order), conditions)
+        if _has_reps(reps_df) else None
+    )
 
     fig = go.Figure()
     fig.add_trace(
@@ -154,6 +201,7 @@ def _abundance_bar(
             marker_line_color="#333",
             marker_line_width=0.5,
             width=0.5,
+            error_y=error_y,
             customdata=rows,
             hovertemplate="<b>%{x}</b><br>log2FC = %{y:.2f}" + hover_extra
             + "<extra></extra>",
@@ -272,6 +320,11 @@ def rna_figure(
             marker_line_color="#333",
             marker_line_width=0.5,
             width=0.5,
+            error_y=(
+                _error_y(
+                    _replicate_sem(reps_df, FOUR_CONDITION_ORDER), conditions
+                ) if has_reps else None
+            ),
             customdata=[[p, d] for p, d in zip(padj, deseq)],
             hovertemplate=hovertemplate,
         )
