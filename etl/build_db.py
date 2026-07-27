@@ -121,6 +121,32 @@ def _s2_1_chan_mean(df: pd.DataFrame, cond: str, rep: int) -> pd.Series:
     return df[cols].mean(axis=1)
 
 
+# quantile of a replicate's positive census values used as its limit of
+# detection. The per-replicate *minimum* is not usable: rep5's is ~20x lower
+# than every other replicate's, which would turn a below-detection channel into
+# a ~-8 log2FC outlier that dominates the mean.
+DETECTION_QUANTILE = 0.01
+
+
+@lru_cache(maxsize=1)
+def _detection_floors() -> dict[int, float]:
+    """Per-biological-replicate limit of detection, as the 1st percentile of
+    that replicate's positive census values across all five conditions.
+
+    A census value of exactly 0 means "below detection in this TMT channel",
+    not "absent" — the protein was identified in that replicate (it has a
+    peptide count) but one channel produced no signal. Substituting the
+    detection limit turns those into censored bounds instead of dropping them.
+    """
+    df = load_s2_1()
+    floors = {}
+    for rep in PROTEOME_REPS:
+        vals = pd.concat([_s2_1_chan_mean(df, c, rep) for c in FIVE_CONDITIONS])
+        vals = vals[vals.notna() & (vals > 0)]
+        floors[rep] = float(vals.quantile(DETECTION_QUANTILE)) if len(vals) else np.nan
+    return floors
+
+
 def _s2_1_replicate_pct() -> pd.DataFrame:
     """Per-(protein x condition x biological replicate) percent-of-control from
     the S2-1 raw census values.
@@ -128,18 +154,48 @@ def _s2_1_replicate_pct() -> pd.DataFrame:
     Within each replicate the two technical sub-measurements are averaged, then
     every condition is scaled so that replicate's D2 mean = 100 — reproducing the
     manuscript's percent-of-control normalization.
+
+    Zero census values are *censored*, not dropped, by substituting that
+    replicate's limit of detection (see :func:`_detection_floors`):
+
+    ======  =========  ===========================  ==========================
+    D2      condition  percent_control              meaning
+    ======  =========  ===========================  ==========================
+    NaN     any        dropped                      absent from this replicate
+    > 0     > 0        ``100 * v / d2``             normal measurement
+    > 0     == 0       ``100 * floor / d2``         upper bound on the loss
+    == 0    > 0        ``100 * v / floor``          lower bound on the increase
+    == 0    == 0       dropped                      no information either way
+    ======  =========  ===========================  ==========================
+
+    The last row matters: flooring *both* sides would yield floor/floor = 100%,
+    injecting a spurious "no change" into conditions where the protein was
+    simply never seen. ``censored`` flags the two middle cases so downstream
+    consumers can present them as bounds rather than point estimates.
+
+    This is the single choke point feeding both :func:`build_proteome` and
+    :func:`build_proteome_replicates`, so the aggregate and the per-replicate
+    overlay are computed from an identical set of values by construction.
     """
     df = load_s2_1()
     ids = df[["uniprot", "protein"]].rename(columns={"protein": "symbol"})
+    floors = _detection_floors()
     frames = []
     for rep in PROTEOME_REPS:
         d2 = _s2_1_chan_mean(df, "D2", rep)
+        floor = floors[rep]
         for cond in FIVE_CONDITIONS:
+            val = _s2_1_chan_mean(df, cond, rep)
+            num = val.mask(val == 0, floor)
+            den = d2.mask(d2 == 0, floor)
+            # both channels below detection -> uninformative, drop
+            both_zero = (val == 0) & (d2 == 0)
+            pct = (100.0 * num / den).mask(both_zero)
             block = ids.copy()
             block["condition"] = cond
             block["rep"] = f"rep{rep}"
-            pct = 100.0 * _s2_1_chan_mean(df, cond, rep) / d2
             block["percent_control"] = pct.values
+            block["censored"] = (((val == 0) | (d2 == 0)) & ~both_zero).values
             frames.append(block)
     out = pd.concat(frames, ignore_index=True)
     return out.dropna(subset=["percent_control"])
@@ -158,24 +214,37 @@ def build_proteome_replicates() -> pd.DataFrame:
         out["condition"], categories=FIVE_CONDITIONS, ordered=True
     )
     out = out.sort_values(["symbol", "condition", "rep"])
-    return out[["uniprot", "symbol", "condition", "rep", "percent_control", "log2fc"]]
+    return out[
+        ["uniprot", "symbol", "condition", "rep", "percent_control", "log2fc",
+         "censored"]
+    ]
 
 
 def build_proteome() -> pd.DataFrame:
     """Aggregated whole-proteome table: mean percent-of-control across replicates,
     per (protein x condition). Derived from the same replicate values the portal
     overlays, so bars (mean of replicates) and the aggregate agree by construction.
+
+    ``n_reps`` is how many biological replicates contributed, and ``censored``
+    marks conditions where at least one of them was a below-detection bound
+    rather than a measurement — both are thin-evidence signals worth surfacing
+    (one protein, AFAP1L2, rests on a single usable replicate).
     """
     reps = _s2_1_replicate_pct()
-    agg = reps.groupby(
-        ["uniprot", "symbol", "condition"], as_index=False
-    )["percent_control"].mean()
+    agg = reps.groupby(["uniprot", "symbol", "condition"], as_index=False).agg(
+        percent_control=("percent_control", "mean"),
+        n_reps=("percent_control", "size"),
+        censored=("censored", "any"),
+    )
     agg["log2fc"] = _pct_to_log2fc(agg["percent_control"])
     agg["condition"] = pd.Categorical(
         agg["condition"], categories=FIVE_CONDITIONS, ordered=True
     )
     agg = agg.sort_values(["symbol", "condition"])
-    return agg[["uniprot", "symbol", "condition", "percent_control", "log2fc"]]
+    return agg[
+        ["uniprot", "symbol", "condition", "percent_control", "log2fc",
+         "n_reps", "censored"]
+    ]
 
 
 # sample column prefix (e.g. "Sample_D8.Chr.2_IGO_...") -> (condition, rep)
@@ -256,9 +325,31 @@ def build_reactivity() -> pd.DataFrame:
     df = df.rename(columns={"protein": "symbol", "LFC_tmt_abpp": "log2fc"})
     df["residue_loc"] = df["residue"].map(_first_residue_loc)
     # whole-proteome (protein-expression) log2FC vs D2, for the dot-plot's
-    # expression triangles. Recompute from percent-of-control rather than trust
-    # the precomputed LFC_WP column, which carries ±inf where signal was lost.
+    # expression triangles. Keep the manuscript's own aggregate (the
+    # whole_proteome percent-of-control column) so the triangles stay tied to
+    # the published values, rather than this repo's independently-derived
+    # build_proteome() numbers.
     df["wp_log2fc"] = _pct_to_log2fc(df["whole_proteome"])
+    # ...except where that column is non-finite: it carries ±inf wherever the
+    # upstream aggregation divided by a D2 of zero, which drops the triangle
+    # entirely (AFAP1L2 D8C is the only such cell). There we fall back to our
+    # own aggregate, which censors that replicate at the limit of detection
+    # instead of dividing by zero.
+    # Only ±inf is patched — a *missing* whole_proteome value means the protein
+    # was not quantified upstream, and must stay an absent triangle.
+    wp = (
+        build_proteome()[["uniprot", "condition", "log2fc"]]
+        .drop_duplicates(subset=["uniprot", "condition"])
+        .rename(columns={"log2fc": "_wp_fallback"})
+    )
+    # merge resets the index (the source CSV is read with index_col=0), so
+    # reset first to keep the mask aligned with the merged frame.
+    df = df.reset_index(drop=True).merge(
+        wp, on=["uniprot", "condition"], how="left"
+    )
+    non_finite = np.isinf(pd.to_numeric(df["whole_proteome"], errors="coerce"))
+    df["wp_log2fc"] = df["wp_log2fc"].where(~non_finite, df["_wp_fallback"])
+    df = df.drop(columns="_wp_fallback")
     order = ["D4A", "D4C", "D8A", "D8C"]
     df["condition"] = pd.Categorical(
         df["condition"], categories=order, ordered=True
@@ -444,6 +535,13 @@ whole_proteome.csv
       * D{cond}_rep{N}: per-biological-replicate percent-of-control (D2=100),
         for cond in D2/D4A/D4C/D8A/D8C and N in 1..6 (technical pairs averaged,
         each replicate scaled so its D2 = 100).
+        A census value of exactly 0 means "below detection in that TMT channel",
+        not "absent". Such channels are censored at that replicate's limit of
+        detection (the 1st percentile of its positive census values) rather than
+        discarded, so the value is a bound: an upper bound on the loss when the
+        condition channel was empty, a lower bound on the increase when the D2
+        reference was. Where both channels were empty the ratio carries no
+        information and the replicate is omitted for that condition.
       * {cond}_log2fc / _p_value / _neglog10_pval / _neglog10_padj / _regulation:
         volcano statistics for each cond-vs-D2 comparison (cond in D4A/D4C/D8A/D8C).
         regulation is the published significance call.
@@ -468,7 +566,12 @@ rna_replicates.csv
 reactivity_5cond.csv
     Cysteine reactivity across the 5 conditions. One row per (cysteine site x condition).
     wp_log2fc is the whole-proteome (protein-expression) log2FC vs D2, repeated
-    per cysteine of a protein (used for the dot-plot expression triangles).
+    per cysteine of a protein (used for the dot-plot expression triangles). It is
+    the manuscript's own whole-proteome aggregate, which is derived independently
+    of whole_proteome.csv above and so may differ from it slightly. The sole
+    exception is where that aggregate is non-finite (a D2 reference of zero
+    upstream): there wp_log2fc falls back to this portal's censored aggregate,
+    which would otherwise leave the expression triangle missing entirely.
     columns: uniprot, symbol, residue, residue_loc, [sequence], condition,
              percent_control (D2=100), log2fc, reactivity_change, wp_log2fc
 

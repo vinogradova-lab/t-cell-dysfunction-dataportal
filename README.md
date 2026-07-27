@@ -29,6 +29,14 @@ All fold changes are **log₂ fold-change relative to D2**. The date-stamped
 `Data S1*.xlsx` / `Data S2*.xlsx` filenames change between revisions, so
 `sync_source.py` globs for the newest.
 
+In the whole proteome, a TMT channel reading exactly 0 means *below detection*,
+not *absent*: those channels are censored at the replicate's limit of detection
+(1st percentile of its positive census values) and flagged `censored`, so the
+value is a bound rather than a point estimate. Channels where both the condition
+and its D2 reference were empty carry no information and are dropped. `n_reps`
+records how many replicates backed each aggregate — one protein (AFAP1L2) rests
+on a single usable replicate.
+
 ## Build & run
 
 ```bash
