@@ -120,6 +120,7 @@ def _add_replicate_points(fig: go.Figure, reps_df: pl.DataFrame, order: list[str
 def _abundance_bar(
     df: pl.DataFrame, order: list[str], yaxis: str,
     hover_extra: str = "", reps_df: pl.DataFrame | None = None,
+    note: str | None = None,
 ) -> go.Figure:
     df = _order(df, order)
     conditions = df["condition"].to_list()
@@ -164,10 +165,58 @@ def _abundance_bar(
     fig.add_hline(y=0, line_color="#666", line_width=1)
     if _has_reps(reps_df):
         _add_replicate_points(fig, reps_df, order)
-    fig.update_layout(**_BASE_LAYOUT)
+    layout = dict(_BASE_LAYOUT)
+    if note:
+        # caveat sits above the plot, so it can't be missed by a reader who
+        # only looks at the bars
+        layout["margin"] = _LEGEND_TOP_MARGIN
+    fig.update_layout(**layout)
+    if note:
+        fig.add_annotation(
+            text=note, xref="paper", yref="paper", x=0, y=1.0,
+            xanchor="left", yanchor="bottom", showarrow=False,
+            font=dict(size=11, color="#a15c00"),
+        )
     fig.update_yaxes(title=yaxis, zeroline=False)
     fig.update_xaxes(title="", categoryorder="array", categoryarray=order)
     return fig
+
+
+def _evidence_note(
+    df: pl.DataFrame, reps_df: pl.DataFrame | None = None
+) -> str | None:
+    """Caveat for whole-proteome bars resting on thin or censored evidence.
+
+    Silent for the ordinary case. Names the volcano omission when a D2
+    reference was missing, so the per-gene view and the dataset-wide view don't
+    appear to disagree for no reason.
+
+    Censoring is read from ``reps_df`` rather than the aggregate: the bars are
+    drawn from the channel-level points, and a dead channel in an otherwise
+    healthy donor shows up there but not in the donor-level aggregate.
+    """
+    parts: list[str] = []
+    if "d2_below_detection" in df.columns:
+        conds = df.filter(pl.col("d2_below_detection"))["condition"].to_list()
+        if conds:
+            parts.append(
+                f"D2 reference below detection in {', '.join(conds)} — "
+                "fold change is a lower bound; omitted from the volcano"
+            )
+    if "n_reps" in df.columns:
+        thin = df.filter(pl.col("n_reps") < 2)["condition"].to_list()
+        if thin:
+            parts.append(f"single donor in {', '.join(thin)}")
+    src = reps_df if _has_reps(reps_df) and "censored" in reps_df.columns else df
+    if "censored" in src.columns:
+        conds = [
+            c for c in src.filter(pl.col("censored"))["condition"].unique().to_list()
+            if c not in "".join(parts)
+        ]
+        if conds:
+            order = [c for c in FOUR_CONDITION_ORDER if c in conds]
+            parts.append(f"below-detection channel censored in {', '.join(order)}")
+    return "⚠ " + "; ".join(parts) if parts else None
 
 
 def proteome_figure(
@@ -185,8 +234,10 @@ def proteome_figure(
     return _abundance_bar(
         df, FOUR_CONDITION_ORDER,
         yaxis="protein abundance, log₂(FC from D2)",
-        hover_extra="<br>%{customdata.percent_control:.1f}% of control",
+        hover_extra="<br>%{customdata.percent_control:.1f}% of control"
+                    "<br>%{customdata.n_reps} donor(s)",
         reps_df=reps_df,
+        note=_evidence_note(df, reps_df),
     )
 
 

@@ -28,25 +28,41 @@ import build_db  # noqa: E402
 FLOOR = 0.05
 
 
-def _s2_1_frame(values: dict[str, float]) -> pd.DataFrame:
+def _s2_1_frame(values: dict[str, float | tuple[float, float]]) -> pd.DataFrame:
     """One-protein S2-1 frame. ``values`` maps condition -> census value for
-    rep1; both technical sub-measurements get the same value, so their mean is
-    that value. Every other replicate is left NaN (absent from that run).
+    rep1, either a scalar (both technical channels alike) or a ``(ch1, ch2)``
+    pair. Every other replicate is left NaN (absent from that run).
     """
     row: dict[str, object] = {"uniprot": "U1", "protein": "TEST"}
     for rep in build_db.PROTEOME_REPS:
         for cond in build_db.FIVE_CONDITIONS:
             v = values.get(cond, np.nan) if rep == 1 else np.nan
-            for sub in (1, 2):
-                row[f"{cond}_rep{rep}_{sub}_processed_census-out"] = v
+            chans = v if isinstance(v, tuple) else (v, v)
+            for sub, cv in zip((1, 2), chans):
+                row[f"{cond}_rep{rep}_{sub}_processed_census-out"] = cv
     return pd.DataFrame([row])
+
+
+# every cached helper that reads the workbook; stale entries would leak the
+# real S2-1 between tests
+_CACHED = ("_detection_floors", "_s2_1_channel_pct", "_wp_median_pct",
+           "_d2_below_detection")
 
 
 @pytest.fixture
 def stub(monkeypatch):
     """Patch the workbook loader + detection floors, clearing the lru_caches."""
 
-    def _apply(values: dict[str, float]) -> pd.DataFrame:
+    def _clear() -> None:
+        for name in _CACHED:
+            # _detection_floors is monkeypatched to a plain lambda during a
+            # test, and this fixture tears down before monkeypatch undoes that
+            clear = getattr(getattr(build_db, name), "cache_clear", None)
+            if clear is not None:
+                clear()
+
+    def _apply(values: dict[str, float | tuple[float, float]]) -> pd.DataFrame:
+        _clear()
         monkeypatch.setattr(build_db, "load_s2_1", lambda: _s2_1_frame(values))
         monkeypatch.setattr(
             build_db,
@@ -55,7 +71,8 @@ def stub(monkeypatch):
         )
         return build_db._s2_1_replicate_pct()
 
-    return _apply
+    yield _apply
+    _clear()
 
 
 def _cell(out: pd.DataFrame, cond: str) -> pd.DataFrame:
@@ -120,14 +137,105 @@ def test_aggregate_and_replicates_agree_on_which_replicates_count(stub):
     agg = build_db.build_proteome()
     reps = build_db.build_proteome_replicates()
 
-    counts = reps.groupby(["uniprot", "condition"], observed=True).size()
+    # the overlay is per channel, so compare donors to donors
+    donors = reps.groupby(["uniprot", "condition"], observed=True)["bio_rep"].nunique()
     for _, r in agg.iterrows():
-        assert r["n_reps"] == counts.get((r["uniprot"], r["condition"]), 0)
+        assert r["n_reps"] == donors.get((r["uniprot"], r["condition"]), 0)
         assert np.isfinite(r["log2fc"])
 
     d8c = agg[agg["condition"] == "D8C"].iloc[0]
     assert d8c["censored"]
     assert not agg[agg["condition"] == "D4C"].iloc[0]["censored"]
+
+
+def test_overlay_splits_each_donor_into_two_channels(stub):
+    """The bar overlay plots technical channels, not donor means, so a donor
+    contributes both of its measurements and the visible spread is real.
+    """
+    stub({"D2": 0.20, "D8C": (0.10, 0.30)})
+    reps = build_db.build_proteome_replicates()
+
+    d8c = reps[reps["condition"] == "D8C"]
+    assert sorted(d8c["rep"]) == ["rep1.1", "rep1.2"]
+    assert d8c["bio_rep"].unique().tolist() == ["rep1"]
+    # each channel divided by the donor's D2 mean (0.20), not by its own channel
+    assert sorted(d8c["percent_control"]) == pytest.approx([50.0, 150.0])
+
+
+def test_channel_pair_averages_back_to_the_donor_value(stub):
+    """Both channels share a denominator, so averaging the pair recovers the
+    donor percent exactly. etl/prerender.py relies on this to rebuild the
+    download's per-donor columns from the channel-level parquet.
+    """
+    stub({"D2": 0.20, "D8C": (0.10, 0.30)})
+    reps = build_db.build_proteome_replicates()
+    donor = build_db._s2_1_replicate_pct()
+
+    got = reps[reps["condition"] == "D8C"]["percent_control"].mean()
+    want = donor[donor["condition"] == "D8C"]["percent_control"].iloc[0]
+    assert got == pytest.approx(want)
+
+
+def test_aggregate_counts_donors_not_channels(stub):
+    """n_reps is the confidence signal, so it must not double when the overlay
+    switches to channels.
+    """
+    stub({"D2": 0.20, "D8C": (0.10, 0.30)})
+    agg = build_db.build_proteome()
+    assert agg[agg["condition"] == "D8C"]["n_reps"].iloc[0] == 1
+
+
+def test_missing_d2_reference_is_flagged_for_volcano_exclusion(stub):
+    """A zero D2 makes the published fold change divide by a halved denominator.
+    The rule keys on D2 detection, not on a gene name.
+    """
+    stub({"D2": 0.0, "D8C": 0.40})
+    flagged = build_db._d2_below_detection()
+    assert set(zip(flagged["uniprot"], flagged["condition"])) == {("U1", "D8C")}
+    assert build_db.build_proteome()["d2_below_detection"].any()
+
+
+def test_measured_d2_is_not_flagged(stub):
+    stub({"D2": 0.20, "D8A": 0.0, "D8C": 0.40})
+    assert build_db._d2_below_detection().empty
+    assert not build_db.build_proteome()["d2_below_detection"].any()
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[1] / "source" / "data_s2.xlsx").exists(),
+    reason="needs source/ staged via scripts/sync_source.py",
+)
+def test_wp_median_reproduces_the_upstream_reactivity_column():
+    """The expression triangles use a median over technical channels, not the
+    mean over biological replicates that build_proteome() reports. Pinning the
+    exact statistic keeps the one patched cell (AFAP1L2 D8C) comparable to its
+    neighbours instead of silently mixing conventions.
+    """
+    root = Path(__file__).resolve().parents[1]
+    src = pd.read_csv(root / "source" / "reactivity_5cond.csv", index_col=0)
+    upstream = src[["uniprot", "condition", "whole_proteome"]].drop_duplicates(
+        ["uniprot", "condition"]
+    )
+    upstream["expected"] = np.log2(
+        pd.to_numeric(upstream["whole_proteome"], errors="coerce") / 100.0
+    )
+    upstream = upstream[np.isfinite(upstream["expected"])]
+
+    got = build_db._wp_median_pct()
+    m = upstream.merge(got, on=["uniprot", "condition"], how="inner")
+    assert len(m) == len(upstream)
+
+    # Uncensored cells must reproduce the published value bit-for-bit — that is
+    # what proves we compute the same statistic upstream does.
+    plain = m[~m["censored"]]
+    assert len(plain) > 18_000
+    assert np.allclose(plain["wp_log2fc"], plain["expected"], rtol=1e-6)
+
+    # The only departures are cells with a below-detection channel, where
+    # upstream averaged a raw 0 and we substitute the detection limit.
+    assert not np.isclose(
+        m[m["censored"]]["wp_log2fc"], m[m["censored"]]["expected"], rtol=1e-6
+    ).any()
 
 
 def test_detection_floor_uses_percentile_not_minimum():

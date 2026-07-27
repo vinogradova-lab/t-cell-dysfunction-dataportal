@@ -147,6 +147,84 @@ def _detection_floors() -> dict[int, float]:
     return floors
 
 
+def _censor(num: pd.Series, den: pd.Series, floor: float) -> tuple[pd.Series, pd.Series]:
+    """percent-of-control with below-detection channels censored at ``floor``.
+
+    Returns ``(percent_control, censored)``. See :func:`_s2_1_replicate_pct`
+    for the rule table; cells carrying no information (both sides below
+    detection) come back as NaN for the caller to drop.
+    """
+    both_zero = (num == 0) & (den == 0)
+    pct = (100.0 * num.mask(num == 0, floor) / den.mask(den == 0, floor))
+    return pct.mask(both_zero), ((num == 0) | (den == 0)) & ~both_zero
+
+
+@lru_cache(maxsize=1)
+def _s2_1_channel_pct() -> pd.DataFrame:
+    """Per-(protein x condition x biological replicate x technical channel)
+    percent-of-control from the S2-1 raw census values.
+
+    Each technical channel is divided by its biological replicate's D2 *mean*,
+    so the two channels of a replicate share a denominator and their spread
+    reflects measurement noise in the numerator alone. This is the same
+    convention the manuscript's reactivity tables use (see
+    :func:`_wp_median_pct`, which reproduces the published column exactly).
+
+    Censoring follows the same rules as :func:`_s2_1_replicate_pct`, applied
+    per channel — so a single dead channel is floored rather than dragging its
+    whole replicate down through the census mean.
+
+    ``rep`` is the display label ("rep3.1"), mirroring the ATP figure's
+    experiment.technical convention; ``bio_rep`` ("rep3") is what donor-level
+    consumers group by.
+    """
+    df = load_s2_1()
+    floors = _detection_floors()
+    ids = df[["uniprot", "protein"]].rename(columns={"protein": "symbol"})
+    frames = []
+    for rep in PROTEOME_REPS:
+        d2 = _s2_1_chan_mean(df, "D2", rep)
+        for cond in FIVE_CONDITIONS:
+            for sub in (1, 2):
+                chan = df[f"{cond}_rep{rep}_{sub}_processed_census-out"]
+                pct, censored = _censor(chan, d2, floors[rep])
+                block = ids.copy()
+                block["condition"] = cond
+                block["rep"] = f"rep{rep}.{sub}"
+                block["bio_rep"] = f"rep{rep}"
+                block["percent_control"] = pct.values
+                block["censored"] = censored.values
+                frames.append(block)
+    out = pd.concat(frames, ignore_index=True)
+    return out.dropna(subset=["percent_control"])
+
+
+@lru_cache(maxsize=1)
+def _wp_median_pct() -> pd.DataFrame:
+    """Whole-proteome percent-of-control under the *reactivity* convention:
+    the median over all technical channels, each divided by its biological
+    replicate's D2 mean.
+
+    This is deliberately a different statistic from :func:`build_proteome`,
+    which takes the mean over biological replicates (each already the mean of
+    its two technical channels). The manuscript's reactivity tables use the
+    median-of-channels form, and reproducing it here is what lets the dot
+    plot's expression triangles stay on one consistent footing — verified to
+    reproduce the upstream ``whole_proteome`` column exactly on all 18,643
+    cells where that column is finite.
+
+    Used only to fill the triangles the upstream column cannot express (a D2
+    reference of zero, which it reports as inf).
+    """
+    out = _s2_1_channel_pct()
+    med = out.groupby(["uniprot", "condition"], as_index=False).agg(
+        percent_control=("percent_control", "median"),
+        censored=("censored", "any"),
+    )
+    med["wp_log2fc"] = _pct_to_log2fc(med["percent_control"])
+    return med[["uniprot", "condition", "wp_log2fc", "censored"]]
+
+
 def _s2_1_replicate_pct() -> pd.DataFrame:
     """Per-(protein x condition x biological replicate) percent-of-control from
     the S2-1 raw census values.
@@ -185,29 +263,31 @@ def _s2_1_replicate_pct() -> pd.DataFrame:
         d2 = _s2_1_chan_mean(df, "D2", rep)
         floor = floors[rep]
         for cond in FIVE_CONDITIONS:
-            val = _s2_1_chan_mean(df, cond, rep)
-            num = val.mask(val == 0, floor)
-            den = d2.mask(d2 == 0, floor)
-            # both channels below detection -> uninformative, drop
-            both_zero = (val == 0) & (d2 == 0)
-            pct = (100.0 * num / den).mask(both_zero)
+            pct, censored = _censor(_s2_1_chan_mean(df, cond, rep), d2, floor)
             block = ids.copy()
             block["condition"] = cond
             block["rep"] = f"rep{rep}"
             block["percent_control"] = pct.values
-            block["censored"] = (((val == 0) | (d2 == 0)) & ~both_zero).values
+            block["censored"] = censored.values
             frames.append(block)
     out = pd.concat(frames, ignore_index=True)
     return out.dropna(subset=["percent_control"])
 
 
 def build_proteome_replicates() -> pd.DataFrame:
-    """Per-replicate whole-proteome percent-of-control -> long log2FC table.
+    """Per-technical-channel whole-proteome percent-of-control -> long log2FC
+    table. This is what the portal overlays as dots on the abundance bars.
 
-    The portal bar for each condition is later drawn as the mean of these
-    replicate values, so the overlaid points center on the bar.
+    Channels, not biological-replicate means: each donor contributes both of its
+    technical measurements, so the overlay shows the measurement spread the
+    donor mean would hide. The bar itself is drawn as the mean of these points
+    (``figures._replicate_means``), so bar and dots stay consistent.
+
+    ``bio_rep`` is retained so donor-level consumers — notably the bulk-download
+    reconstruction in ``etl/prerender.py`` — can recover per-donor values by
+    averaging a channel pair.
     """
-    out = _s2_1_replicate_pct()
+    out = _s2_1_channel_pct().copy()  # cached frame; don't mutate in place
     out["log2fc"] = _pct_to_log2fc(out["percent_control"])
     out = out.dropna(subset=["log2fc"])
     out["condition"] = pd.Categorical(
@@ -215,9 +295,49 @@ def build_proteome_replicates() -> pd.DataFrame:
     )
     out = out.sort_values(["symbol", "condition", "rep"])
     return out[
-        ["uniprot", "symbol", "condition", "rep", "percent_control", "log2fc",
-         "censored"]
+        ["uniprot", "symbol", "condition", "rep", "bio_rep", "percent_control",
+         "log2fc", "censored"]
     ]
+
+
+@lru_cache(maxsize=1)
+def _d2_below_detection() -> pd.DataFrame:
+    """(uniprot, condition) pairs whose D2 reference was below detection in a
+    replicate that contributes to that condition.
+
+    Percent-of-control is undefined without a D2 reference: we censor it at the
+    limit of detection, which makes the ratio a *lower bound* rather than a
+    measurement. The published S2-1 statistics instead average the raw zero into
+    the D2 denominator, which halves it and inflates the fold change — for
+    AFAP1L2 D8C by ~1.19 log2, enough to make it the most extreme point in the
+    D8C volcano. Those comparisons are dropped from the volcano (see
+    :func:`build_volcano`) and flagged here for the per-gene view.
+
+    Derived from :func:`_s2_1_replicate_pct` so "contributes" keeps exactly one
+    definition (not absent, not below detection on both sides).
+    """
+    reps = _s2_1_replicate_pct()
+    df = load_s2_1()
+    d2_zero = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "uniprot": df["uniprot"],
+                    "rep": f"rep{rep}",
+                    "d2_zero": (_s2_1_chan_mean(df, "D2", rep) == 0).values,
+                }
+            )
+            for rep in PROTEOME_REPS
+        ],
+        ignore_index=True,
+    )
+    hit = reps.merge(d2_zero[d2_zero["d2_zero"]], on=["uniprot", "rep"], how="inner")
+    return (
+        hit[["uniprot", "condition"]]
+        .drop_duplicates()
+        .assign(d2_below_detection=True)
+        .reset_index(drop=True)
+    )
 
 
 def build_proteome() -> pd.DataFrame:
@@ -225,10 +345,16 @@ def build_proteome() -> pd.DataFrame:
     per (protein x condition). Derived from the same replicate values the portal
     overlays, so bars (mean of replicates) and the aggregate agree by construction.
 
-    ``n_reps`` is how many biological replicates contributed, and ``censored``
-    marks conditions where at least one of them was a below-detection bound
-    rather than a measurement — both are thin-evidence signals worth surfacing
-    (one protein, AFAP1L2, rests on a single usable replicate).
+    Deliberately aggregated over *biological* replicates, unlike the
+    channel-level overlay in :func:`build_proteome_replicates` — ``n_reps``
+    counts donors, which is the meaningful confidence signal.
+
+    ``censored`` marks conditions where at least one donor was a
+    below-detection bound rather than a measurement, and
+    ``d2_below_detection`` the stronger case where the D2 reference itself was
+    missing (which also removes the comparison from the volcano). Both are
+    thin-evidence signals worth surfacing: one protein, AFAP1L2, rests on a
+    single usable donor.
     """
     reps = _s2_1_replicate_pct()
     agg = reps.groupby(["uniprot", "symbol", "condition"], as_index=False).agg(
@@ -237,13 +363,15 @@ def build_proteome() -> pd.DataFrame:
         censored=("censored", "any"),
     )
     agg["log2fc"] = _pct_to_log2fc(agg["percent_control"])
+    agg = agg.merge(_d2_below_detection(), on=["uniprot", "condition"], how="left")
+    agg["d2_below_detection"] = agg["d2_below_detection"].notna()
     agg["condition"] = pd.Categorical(
         agg["condition"], categories=FIVE_CONDITIONS, ordered=True
     )
     agg = agg.sort_values(["symbol", "condition"])
     return agg[
         ["uniprot", "symbol", "condition", "percent_control", "log2fc",
-         "n_reps", "censored"]
+         "n_reps", "censored", "d2_below_detection"]
     ]
 
 
@@ -327,20 +455,22 @@ def build_reactivity() -> pd.DataFrame:
     # whole-proteome (protein-expression) log2FC vs D2, for the dot-plot's
     # expression triangles. Keep the manuscript's own aggregate (the
     # whole_proteome percent-of-control column) so the triangles stay tied to
-    # the published values, rather than this repo's independently-derived
-    # build_proteome() numbers.
+    # the published values. Note this is a *median over technical channels*,
+    # not the mean over biological replicates that build_proteome() reports —
+    # the two differ by ~0.035 log2 for most proteins.
     df["wp_log2fc"] = _pct_to_log2fc(df["whole_proteome"])
     # ...except where that column is non-finite: it carries ±inf wherever the
     # upstream aggregation divided by a D2 of zero, which drops the triangle
-    # entirely (AFAP1L2 D8C is the only such cell). There we fall back to our
-    # own aggregate, which censors that replicate at the limit of detection
-    # instead of dividing by zero.
+    # entirely (AFAP1L2 D8C is the only such cell). There we substitute
+    # _wp_median_pct(), which computes the same median-of-channels statistic
+    # but censors the empty D2 at the limit of detection instead of dividing by
+    # zero — so the patched triangle stays comparable to its neighbours.
     # Only ±inf is patched — a *missing* whole_proteome value means the protein
     # was not quantified upstream, and must stay an absent triangle.
     wp = (
-        build_proteome()[["uniprot", "condition", "log2fc"]]
+        _wp_median_pct()[["uniprot", "condition", "wp_log2fc"]]
         .drop_duplicates(subset=["uniprot", "condition"])
-        .rename(columns={"log2fc": "_wp_fallback"})
+        .rename(columns={"wp_log2fc": "_wp_fallback"})
     )
     # merge resets the index (the source CSV is read with index_col=0), so
     # reset first to keep the mask aligned with the merged frame.
@@ -434,6 +564,26 @@ def build_volcano() -> pd.DataFrame:
     out = pd.concat(frames, ignore_index=True)
     # drop proteins with no measured FC in a comparison (all-NaN rows)
     out = out.dropna(subset=["log2fc", "neglog10_padj"]).reset_index(drop=True)
+
+    # Drop comparisons whose D2 reference was below detection in a contributing
+    # replicate. The published log2FC divides by a D2 mean that averaged in a
+    # raw zero, inflating the fold change (AFAP1L2 D8C by ~1.19 log2, making it
+    # the most extreme point in that volcano) — and its p-value cannot be
+    # recomputed here, so correcting the x-position in place would pair a value
+    # with a statistic never computed from it. The protein keeps its per-gene
+    # view, where the censored value is shown with a low-confidence note.
+    excl = _d2_below_detection().rename(columns={"condition": "comparison"})
+    before = len(out)
+    out = (
+        out.merge(excl, on=["uniprot", "comparison"], how="left")
+        .query("d2_below_detection.isna()")
+        .drop(columns="d2_below_detection")
+        .reset_index(drop=True)
+    )
+    if before != len(out):
+        print(f"  volcano: dropped {before - len(out)} row(s) with a "
+              f"below-detection D2 reference")
+
     out["comparison"] = pd.Categorical(
         out["comparison"], categories=VOLCANO_COMPARISONS, ordered=True
     )
@@ -542,9 +692,19 @@ whole_proteome.csv
         condition channel was empty, a lower bound on the increase when the D2
         reference was. Where both channels were empty the ratio carries no
         information and the replicate is omitted for that condition.
+
+      NOTE the portal's volcano plot omits any (protein x comparison) whose D2
+      reference was below detection in a contributing replicate. The published
+      log2FC there divides by a D2 mean that averaged in a raw zero, which
+      halves the denominator and inflates the fold change (for AFAP1L2 D8C by
+      ~1.19 log2, making it the most extreme point in that comparison). The
+      statistics are still reported in this file as published; only the plotted
+      point is withheld, and the protein keeps its per-gene view.
       * {cond}_log2fc / _p_value / _neglog10_pval / _neglog10_padj / _regulation:
         volcano statistics for each cond-vs-D2 comparison (cond in D4A/D4C/D8A/D8C).
-        regulation is the published significance call.
+        regulation is the published significance call. These are reproduced here
+        as published, including comparisons the portal's volcano plot omits (see
+        below) — so this file remains a faithful copy of the source statistics.
       * mitochondrial, peroxisome, redox_related, cell_cycle,
         nucleotide_metabolism, endoplasmic_reticulum: boolean functional-group
         flags (global, not per-comparison).
@@ -567,11 +727,13 @@ reactivity_5cond.csv
     Cysteine reactivity across the 5 conditions. One row per (cysteine site x condition).
     wp_log2fc is the whole-proteome (protein-expression) log2FC vs D2, repeated
     per cysteine of a protein (used for the dot-plot expression triangles). It is
-    the manuscript's own whole-proteome aggregate, which is derived independently
-    of whole_proteome.csv above and so may differ from it slightly. The sole
-    exception is where that aggregate is non-finite (a D2 reference of zero
-    upstream): there wp_log2fc falls back to this portal's censored aggregate,
-    which would otherwise leave the expression triangle missing entirely.
+    the manuscript's own whole-proteome aggregate: the MEDIAN over technical
+    channels, each divided by its biological replicate's D2 mean. Note this is a
+    different statistic from whole_proteome.csv above, which reports the MEAN
+    over biological replicates — expect the two to differ by ~0.035 log2 for most
+    proteins. The sole exception is where the upstream median is non-finite (a D2
+    reference of zero): there wp_log2fc is recomputed with that channel censored
+    at the limit of detection, which would otherwise leave the triangle missing.
     columns: uniprot, symbol, residue, residue_loc, [sequence], condition,
              percent_control (D2=100), log2fc, reactivity_change, wp_log2fc
 

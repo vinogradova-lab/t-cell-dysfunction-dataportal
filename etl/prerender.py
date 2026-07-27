@@ -142,11 +142,16 @@ def _proteome_download_from_parquet(store: Store) -> pd.DataFrame:
     the column layout of ``build_db.build_proteome_download`` (which reads the
     S2-1 xlsx, absent in CI)."""
     reps = store.tables["proteome_replicates"].to_pandas()
+    # The replicate table is per technical channel, but this download's
+    # D{cond}_rep{N} columns are per *donor* (as build_proteome_download emits
+    # them from the xlsx). Averaging a channel pair recovers the donor value
+    # exactly, not approximately: both channels are divided by the same D2 mean,
+    # so mean(100*c1/d2, 100*c2/d2) == 100*mean(c1,c2)/d2.
     wide = reps.pivot_table(
         index=["uniprot", "symbol"],
-        columns=["condition", "rep"],
+        columns=["condition", "bio_rep"],
         values="percent_control",
-        aggfunc="first",
+        aggfunc="mean",
     )
     wide.columns = [f"{cond}_{rep}" for cond, rep in wide.columns]
     wide = wide.reset_index()

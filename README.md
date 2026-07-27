@@ -29,13 +29,26 @@ All fold changes are **log₂ fold-change relative to D2**. The date-stamped
 `Data S1*.xlsx` / `Data S2*.xlsx` filenames change between revisions, so
 `sync_source.py` globs for the newest.
 
+Two different aggregates of protein expression are in play, and they are not
+interchangeable: the whole-proteome tab reports the **mean over biological
+replicates**, while the reactivity dot plot's expression triangles carry the
+manuscript's **median over technical channels**. They differ by ~0.035 log₂ for
+most proteins.
+
 In the whole proteome, a TMT channel reading exactly 0 means *below detection*,
 not *absent*: those channels are censored at the replicate's limit of detection
 (1st percentile of its positive census values) and flagged `censored`, so the
 value is a bound rather than a point estimate. Channels where both the condition
 and its D2 reference were empty carry no information and are dropped. `n_reps`
-records how many replicates backed each aggregate — one protein (AFAP1L2) rests
-on a single usable replicate.
+records how many donors backed each aggregate — one protein (AFAP1L2) rests
+on a single usable donor.
+
+The abundance bars overlay **per technical channel** (two per donor), so the
+dots show measurement spread rather than a donor mean; the bar is the mean of
+the dots shown. The volcano additionally **omits** any comparison whose D2
+reference was below detection — the published fold change there divides by a
+D2 mean that averaged in a raw zero, inflating it (AFAP1L2 D8C by ~1.19 log₂).
+Those proteins keep their per-gene view, annotated with the caveat.
 
 ## Build & run
 
