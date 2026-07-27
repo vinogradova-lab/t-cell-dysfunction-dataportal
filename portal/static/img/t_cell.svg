@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10.76 11.11">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: url(#linear-gradient-2);
+      }
+
+      .cls-2 {
+        fill: url(#radial-gradient);
+        stroke: url(#linear-gradient);
+        stroke-miterlimit: 10;
+        stroke-width: .15px;
+      }
+
+      .cls-3 {
+        fill: #ef8444;
+      }
+
+      .cls-4 {
+        opacity: .9;
+      }
+
+      .cls-5 {
+        opacity: .85;
+      }
+
+      .cls-6 {
+        opacity: .5;
+      }
+    </style>
+    <radialGradient id="radial-gradient" cx="455.71" cy="119.1" fx="455.71" fy="119.1" r="13.5" gradientTransform="translate(-242.44 -50.19) rotate(-2.86) scale(.54 .57)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset=".45" stop-color="#f5ac81" stop-opacity=".86"/>
+      <stop offset=".68" stop-color="#f18545" stop-opacity=".8"/>
+      <stop offset=".98" stop-color="#f18545" stop-opacity=".6"/>
+    </radialGradient>
+    <linearGradient id="linear-gradient" x1="59.15" y1="6.56" x2="74.66" y2="2.41" gradientTransform="translate(-61.11 4.28) rotate(-2.86)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ed8344"/>
+      <stop offset=".63" stop-color="#f58746" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".4"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="94.44" y1="36.63" x2="96.87" y2="36.63" gradientTransform="translate(-92.06 -19.33) rotate(-6.53)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ee8344"/>
+      <stop offset=".11" stop-color="#ee864a"/>
+      <stop offset=".25" stop-color="#f0925b"/>
+      <stop offset=".41" stop-color="#f2a477"/>
+      <stop offset=".59" stop-color="#f6be9e"/>
+      <stop offset=".77" stop-color="#fadfcf"/>
+      <stop offset=".93" stop-color="#fff"/>
+    </linearGradient>
+  </defs>
+  <g id="Layer_1-2" data-name="Layer 1">
+    <g class="cls-5">
+      <g class="cls-4">
+        <path class="cls-2" d="M8.97,9.68c1.72-1.61,2.15-4.36,1.29-6.57C9.54,1.25,7.94.25,6.09.09,2.13-.23-1.14,3.56.51,7.67c1.37,3.41,5.81,4.49,8.45,2.01Z"/>
+        <path class="cls-3" d="M8.13,4.58l.39.63c.96,1.53-.11,3.53-1.91,3.59l-.74.03c-1.81.06-3-1.85-2.16-3.45l.35-.65c.85-1.6,3.11-1.68,4.07-.14Z"/>
+        <g class="cls-6">
+          <path class="cls-1" d="M6.19,6.09c.11.07.21.15.3.25l-.16-.17c.09.09.17.2.23.31l-.12-.21c.06.11.11.22.14.34l-.06-.24c.03.11.04.22.04.34v-.25c0,.1-.01.19-.04.28l.07-.23c-.02.05-.04.11-.06.16-.1.21-.1.49-.01.71.08.2.27.41.49.5.23.09.49.11.72.01s.4-.26.5-.48c.45-.99,0-2.17-.88-2.75-.21-.14-.42-.22-.68-.19-.23.03-.48.16-.62.34s-.23.43-.2.67c.04.23.14.48.34.61h0Z"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

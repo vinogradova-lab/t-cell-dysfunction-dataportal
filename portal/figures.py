@@ -49,6 +49,10 @@ _LEGEND_TOP_MARGIN = dict(l=64, r=20, t=34, b=50)
 ERROR_BAR_LINE_WIDTH = 0.25
 ERROR_BAR_CAP_WIDTH = 8
 
+# shared by every vs-D2 categorical x-axis (proteome, RNA, reactivity) so the
+# three panels of a gene view label their axis identically
+CONDITION_AXIS_TITLE = "condition (vs D2)"
+
 
 def _empty(msg: str) -> go.Figure:
     fig = go.Figure()
@@ -226,7 +230,9 @@ def _abundance_bar(
             font=dict(size=11, color="#a15c00"),
         )
     fig.update_yaxes(title=yaxis, zeroline=False)
-    fig.update_xaxes(title="", categoryorder="array", categoryarray=order)
+    fig.update_xaxes(
+        title=CONDITION_AXIS_TITLE, categoryorder="array", categoryarray=order
+    )
     return fig
 
 
@@ -336,7 +342,10 @@ def rna_figure(
         _add_replicate_points(fig, reps_df, FOUR_CONDITION_ORDER)
     fig.update_layout(**_BASE_LAYOUT)
     fig.update_yaxes(title="mRNA, log₂(FC from D2)", zeroline=False)
-    fig.update_xaxes(title="", categoryorder="array", categoryarray=FOUR_CONDITION_ORDER)
+    fig.update_xaxes(
+        title=CONDITION_AXIS_TITLE, categoryorder="array",
+        categoryarray=FOUR_CONDITION_ORDER,
+    )
     return fig
 
 
@@ -462,7 +471,7 @@ def reactivity_figure(
     )
     fig.update_yaxes(title="cysteine reactivity, log₂(FC from D2)", zeroline=False)
     fig.update_xaxes(
-        title="condition (vs D2)",
+        title=CONDITION_AXIS_TITLE,
         tickmode="array",
         tickvals=[xpos[c] for c in order],
         ticktext=list(order),
