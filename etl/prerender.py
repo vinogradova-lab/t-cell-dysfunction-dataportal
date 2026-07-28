@@ -169,7 +169,7 @@ def _proteome_download_from_parquet(store: Store) -> pd.DataFrame:
     ]
 
     v = store.tables["volcano"].to_pandas()
-    stat_cols = ["log2fc", "p_value", "neglog10_pval", "neglog10_padj", "regulation"]
+    stat_cols = build_db.VOLCANO_STATS
     flags = [f for f in build_db.VOLCANO_FLAGS if f in v.columns]
     vol_cols: list[str] = []
     out = wide

@@ -37,16 +37,19 @@ _TABLE_FILES = {
 
 MODALITIES = ["proteome", "rna", "reactivity", "reactivity_atp"]
 
-# vs-D2 volcano comparisons, in display order, with human labels
+# volcano comparisons, in display order, with human labels. The first four are
+# against D2 — left unqualified because the figure's x-axis title names the
+# reference — and the last is chronic over acute at day 8.
 VOLCANO_COMPARISONS = [
     ("D4A", "Day 4, Acute"),
     ("D4C", "Day 4, Chronic"),
     ("D8A", "Day 8, Acute"),
     ("D8C", "Day 8, Chronic"),
+    ("D8C_vs_D8A", "Day 8, Chronic vs Acute"),
 ]
 
 # volcano dataset id -> (parquet table, picker label). Both datasets cover the
-# same four vs-D2 comparisons; the RNA one is restricted to genes that also have
+# same comparisons; the RNA one is restricted to genes that also have
 # whole-proteome data, so the two plot the same gene universe.
 VOLCANO_DATASETS = [
     ("proteome", "volcano", "Whole proteome"),
@@ -166,7 +169,7 @@ class Store:
     def volcano_comparisons(
         self, dataset: str = DEFAULT_VOLCANO_DATASET
     ) -> list[dict]:
-        """Available vs-D2 comparisons that actually have volcano data."""
+        """Available comparisons that actually have volcano data."""
         table = _VOLCANO_TABLE.get(dataset)
         if table is None or table not in self.tables:
             return []

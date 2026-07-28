@@ -46,7 +46,7 @@ def _s2_1_frame(values: dict[str, float | tuple[float, float]]) -> pd.DataFrame:
 # every cached helper that reads the workbook; stale entries would leak the
 # real S2-1 between tests
 _CACHED = ("_detection_floors", "_s2_1_channel_pct", "_wp_median_pct",
-           "_d2_below_detection")
+           "_ref_below_detection")
 
 
 @pytest.fixture
@@ -199,6 +199,29 @@ def test_measured_d2_is_not_flagged(stub):
     stub({"D2": 0.20, "D8A": 0.0, "D8C": 0.40})
     assert build_db._d2_below_detection().empty
     assert not build_db.build_proteome()["d2_below_detection"].any()
+
+
+# The volcano's D8C-vs-D8A panel divides by D8A, so the same inflation applies
+# with a different denominator. Real hits: AFAP1L2 (+4.68) and TNFRSF4 (+2.87),
+# both from a dead D8A channel in rep5.
+def test_the_reference_condition_is_parameterized(stub):
+    """A dead D8A channel inflates every ratio taken against D8A, and none of
+    the ratios taken against a measured D2. The two must not be conflated.
+    """
+    stub({"D2": 0.20, "D8A": 0.0, "D8C": 0.40})
+    flagged = build_db._ref_below_detection("D8A")
+    assert set(zip(flagged["uniprot"], flagged["condition"])) == {
+        ("U1", "D2"), ("U1", "D8C")
+    }
+    assert build_db._ref_below_detection("D2").empty
+
+
+def test_reference_and_numerator_both_zero_is_not_a_hit(stub):
+    """Both channels empty carries no information either way, so the replicate
+    is already excluded upstream rather than treated as an inflated ratio.
+    """
+    stub({"D2": 0.20, "D8A": 0.0, "D8C": 0.0})
+    assert "D8C" not in build_db._ref_below_detection("D8A")["condition"].tolist()
 
 
 @pytest.mark.skipif(

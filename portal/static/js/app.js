@@ -31,16 +31,17 @@ const VOLCANO_COPY = {
   proteome: {
     title: "Whole-proteome volcano",
     blurb:
-      "Differential protein abundance vs D2 across the proteome. Each point is " +
-      "a protein; click one to open its per-gene view. Dashed guides mark " +
+      "Differential protein abundance across the proteome, for the comparison " +
+      "named on the x axis. Each point is a protein; click one to open its " +
+      "per-gene view. Dashed guides mark " +
       "±1.5-fold and p = 0.05.",
   },
   rna: {
     title: "Transcriptome volcano",
     blurb:
-      "Differential mRNA abundance vs D2, restricted to the ~6.2k genes that " +
-      "also have whole-proteome data, so the two volcanoes cover one gene " +
-      "universe. Each point is a gene; click one to open its per-gene view. " +
+      "Differential mRNA abundance for the comparison named on the x axis, " +
+      "restricted to the ~6.2k genes that also have whole-proteome data. " +
+      "Each point is a gene; click one to open its per-gene view. " +
       "Dashed guides mark ±2-fold and adjusted p = 0.05.",
   },
 };
@@ -201,7 +202,7 @@ async function selectGene(symbol, updateUrl = true) {
   geneHeader.innerHTML =
     `<h2>${escapeHtml(meta.symbol)}</h2>` +
     `<p class="gene-desc">${escapeHtml(meta.description || "")}</p>` +
-    `<p class="muted">${meta.modalities.length} dataset(s) available${uni}</p>`;
+    `<p class="muted">detected in ${meta.modalities.length} dataset(s)${uni}</p>`;
 
   const available = MODALITY_ORDER.filter((m) => meta.modalities.includes(m));
   if (!available.length) {
@@ -340,7 +341,12 @@ async function selectVolcanoDataset(dataset) {
   comparisons.forEach((c) => {
     const opt = document.createElement("option");
     opt.value = c.id;
-    opt.textContent = `${c.label} (${c.id}) vs D2`;
+    // a bare id ("D8C") is that condition vs D2; an id written
+    // "<numerator>_vs_<denominator>" names its own reference, so appending
+    // "vs D2" to it would read "…Chronic vs Acute (D8C_vs_D8A) vs D2".
+    opt.textContent = c.id.includes("_vs_")
+      ? `${c.label} (${c.id.replace("_vs_", " vs ")})`
+      : `${c.label} (${c.id}) vs D2`;
     volcanoSelect.appendChild(opt);
   });
   // default to the most dysfunctional comparison if present, else the first

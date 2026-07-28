@@ -21,12 +21,15 @@ these inputs; `sync_source.py` stages them into `source/` on demand.
 |---|---|---|
 | Whole proteome | log₂FC vs D2 (+ per-replicate, volcano, p-values) | Data S2, sheet `S2-1` |
 | Bulk RNA-seq | log₂FC vs D2 + padj | Data S1, sheet `S1-1` |
+| RNA D8C vs D8A | log₂FC + padj (volcano only) | Data S2, sheet `S2-2` |
 | RNA replicate overlays | VST-normalized counts | analysis repo |
 | Reactivity (5 cond) | log₂FC vs D2 per cysteine | analysis repo |
 | Reactivity ATP add-back | log₂FC vs D2, per replicate | analysis repo |
 | Polar metabolomics | channel ratios + per-comparison DE (download only) | Data S3, sheet `S3-1` |
 
-All fold changes are **log₂ fold-change relative to D2**. The date-stamped
+Fold changes are **log₂ fold-change relative to D2** unless a column or
+comparison names its own reference (`D8C_vs_D8A`, and the metabolomics
+`A_vs_B` columns, are numerator-first). The date-stamped
 `Data S1*.xlsx` / `Data S2*.xlsx` filenames change between revisions, so
 `sync_source.py` globs for the newest.
 
@@ -53,24 +56,45 @@ Those proteins keep their per-gene view, annotated with the caveat.
 
 ## Build & run
 
+The deployed portal is **static** — the frontend in `portal/static/js/app.js`
+talks only to the pre-rendered JSON under `site/api/`, never to a live server.
+So previewing it locally means building that tree and serving it as files.
+
 ```bash
 # 1. Stage inputs (once, and whenever upstream data changes)
 python scripts/sync_source.py                 # from ../t-cell-dysfunction-2026
 python scripts/sync_source.py --source-repo /path/to/repo   # or elsewhere
 
-# 2a. Local (dev)
+# 2. ETL: source workbooks -> parquet + bulk downloads
 pip install -r requirements.txt
 python etl/build_db.py                         # source/ -> data/parquet + data/downloads
-python portal/app.py                           # http://127.0.0.1:5000
 
-# 2b. Docker (production-like) — ETL runs in the image build, so run step 1 first
-docker compose up --build                      # http://localhost:8080
+# 3. Pre-render the site, then serve it
+python etl/prerender.py --out site --limit 200  # drop --limit for the full ~17.5k genes
+cd site && python -m http.server 8099           # http://127.0.0.1:8099
 ```
 
-Under Docker, `web` runs gunicorn (read-only); `nginx` reverse-proxies, gzips,
-and fronts static assets and `/downloads/`.
+`--limit N` renders only the first N per-gene figure bundles, turning a
+~10-minute full build into ~13 seconds. Everything else is still complete — the
+volcanoes, the full search index, and the bulk downloads all work. Searching a
+gene outside the first N finds it (the index covers all ~17.5k) but its charts
+fail with "Could not load data for this gene", since only its bundle is missing.
+Re-run `prerender.py` to pick up any change to `figures.py`, `store.py`, or the
+parquet: the served tree is a build artifact, not live code.
+
+`python portal/app.py` (http://127.0.0.1:5000) still runs the Flask JSON API
+below, but **it does not serve a working UI**: the SPA it hands out requests
+`api/genes.json`, `api/downloads.json` and friends, which are prerender outputs
+with no Flask route behind them, so the page loads empty. Use it to exercise the
+API with `curl`, not to look at the portal. The Docker stack (`docker compose up
+--build`, http://localhost:8080) runs that same Flask app behind gunicorn/nginx
+and so has the same limitation; GitHub Pages, not Docker, is what actually
+serves this portal.
 
 ## API
+
+Consumed by `curl`, not by the frontend — the browser reads the pre-rendered
+equivalents under `site/api/` (see Build & run).
 
 | Route | Purpose |
 |---|---|
@@ -78,13 +102,15 @@ and fronts static assets and `/downloads/`.
 | `GET /api/gene/<symbol>` | metadata + which modalities have data |
 | `GET /api/gene/<symbol>/<modality>` | Plotly figure JSON (`204` if no data) |
 | `GET /api/volcano/datasets` | volcano datasets (`proteome`, `rna`) |
-| `GET /api/volcano/<dataset>/comparisons` | that dataset's comparisons (vs D2) |
+| `GET /api/volcano/<dataset>/comparisons` | that dataset's comparisons |
 | `GET /api/volcano/<dataset>/<comparison>` | volcano figure JSON (`?highlight=<symbol>` to pin a gene) |
 | `GET /api/downloads` | bulk-download manifest |
 | `GET /downloads/<file>` | processed data files (CSV / ZIP) |
 
 `<modality>` ∈ `proteome`, `rna`, `reactivity`, `reactivity_atp`.
-`<comparison>` ∈ `D4A`, `D4C`, `D8A`, `D8C` (each vs D2). Unlike the per-gene
+`<comparison>` ∈ `D4A`, `D4C`, `D8A`, `D8C` (a bare code is that condition vs
+D2) plus `D8C_vs_D8A`, day-8 chronic over day-8 acute. The figure's x-axis title
+names the reference, so the picker's labels don't have to. Unlike the per-gene
 routes, the volcanoes are **dataset-wide** — every gene for one comparison, each
 point clickable through to that gene's per-gene view.
 Deep links: `/?gene=MAP2K4` opens straight to a gene (shareable / citable).
@@ -97,18 +123,30 @@ and is restricted to the ~6.2k genes that also have whole-proteome data, so the
 two plots cover one gene universe. That `padj` comes from the transcriptome-wide
 fit; it is not recomputed over the matched subset.
 
+The `D8C_vs_D8A` panel is published data too, but from different sheets on the
+two sides, and they label comparisons in **opposite directions** — the single
+easiest thing to get backwards here. The proteome's comes from S2-1's
+`D8A vs. D8C` block, whose labels are reversed relative to its values (that
+block is log₂(D8C/D8A), the same convention that makes `D2 vs. D8C` the D8C
+panel). The transcriptome's comes from S2-2 `D8C vs D8A RNA_*`, which is
+numerator-first and read as written; S1-1 publishes only the four vs-D2
+contrasts, so it cannot supply this one.
+
 ## Layout
 
 ```
 scripts/sync_source.py   stage supplementary workbooks + analysis inputs into source/
 etl/build_db.py          source workbooks/CSVs -> parquet tables + bulk-download bundle
 etl/gene_index.py        search registry (symbols/uniprot/aliases)
-portal/app.py            Flask routes
+etl/prerender.py         parquet -> static site/ tree (what CI deploys, and what
+                         the frontend actually reads)
+portal/app.py            Flask JSON API (curl-only; does not serve a working UI)
 portal/store.py          in-memory parquet store + queries
 portal/palette.py        colors/ordering ported from the manuscript figure code
-portal/figures.py        Plotly figure builders (one per modality)
+portal/figures.py        Plotly figure builders (one per modality + the volcanoes)
 portal/templates,static  single-page frontend (+ vendored plotly.min.js)
-Dockerfile, docker-compose.yml, nginx/  deployment
+.github/workflows/pages.yml  prerender + deploy to GitHub Pages
+Dockerfile, docker-compose.yml, nginx/  legacy Flask deployment (see Build & run)
 ```
 
 `source/`, `data/parquet/`, and `data/downloads/` are git-ignored build

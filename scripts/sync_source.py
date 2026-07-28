@@ -44,9 +44,10 @@ SOURCE_FILES = {
 }
 
 # Supplementary workbooks (glob pattern relative to the analysis repo -> dest
-# name). Data S1 sheet "S1-1" holds the bulk-RNA DESeq2 results; Data S2 sheet
-# "S2-1" holds the whole-proteome per-replicate values + volcano/significance
-# columns + functional-group flags; Data S3 sheet "S3-1" holds the polar
+# name). Data S1 sheet "S1-1" holds the bulk-RNA DESeq2 results vs D2; Data S2
+# sheet "S2-1" holds the whole-proteome per-replicate values + volcano/
+# significance columns + functional-group flags, and sheet "S2-2" supplies the
+# one RNA comparison S1-1 omits (D8C vs D8A); Data S3 sheet "S3-1" holds the polar
 # metabolomics (the portal ships it as a bulk download only, so the workbook's
 # other sheets — lipidomics and isotope tracing — are not read). Update the
 # patterns if the manuscript renames the files.

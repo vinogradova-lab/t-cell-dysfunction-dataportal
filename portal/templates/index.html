@@ -73,10 +73,10 @@
              as it knows the active dataset, so keep this the default one -->
         <div>
           <h2 id="volcano-title">Whole-proteome volcano</h2>
-          <p class="muted" id="volcano-blurb">Differential protein abundance vs
-            D2 across the proteome. Each point is a protein; click one to open
-            its per-gene view. Dashed guides mark ±1.5-fold and
-            p&nbsp;=&nbsp;0.05.</p>
+          <p class="muted" id="volcano-blurb">Differential protein abundance
+            across the proteome, for the comparison named on the x axis. Each
+            point is a protein; click one to open its per-gene view. Dashed
+            guides mark ±1.5-fold and p&nbsp;=&nbsp;0.05.</p>
         </div>
         <div class="volcano-pickers">
           <label class="volcano-picker">
@@ -94,7 +94,9 @@
 
     <section id="downloads" class="downloads">
       <h2>Bulk download</h2>
-      <p class="muted">Full processed data (log₂ fold-change from D2), as CSV.</p>
+      <p class="muted">Full processed data as CSV. Fold changes are log₂ from D2
+        except where a column names its own reference (an <code>A_vs_B</code>
+        column is log₂(A/B), numerator first).</p>
       <div id="downloads-list" class="downloads-list"></div>
     </section>
   </main>
@@ -107,6 +109,12 @@
       <p>Expression is the median over replicates in the cysteine reactivity
         plots, and the mean over replicates for the whole proteome expression
         plots.</p>
+      <p>Error bars on the whole proteome and RNA bar plots are &plusmn;1 SEM
+        over the replicates shown as points, on the log&#8322; fold-change
+        scale. Conditions with a single replicate have no bar.</p>
+      <p>In the cysteine reactivity ATP add-back plots, the box spans the
+        interquartile range with the line at the median, and the whiskers reach
+        the furthest replicates within 1.5&times; the IQR.</p>
     </div>
   </footer>
 

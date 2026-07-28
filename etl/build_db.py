@@ -73,6 +73,29 @@ def load_s2_1() -> pd.DataFrame:
 
 
 @lru_cache(maxsize=1)
+def load_s2_2() -> pd.DataFrame:
+    """Supplementary sheet S2-2 (bulk RNA vs whole proteome): per-comparison RNA
+    DESeq2 statistics beside the matched WP fold change, over the ~6.1k genes
+    measured by both. Two title rows precede the header (``header=2``).
+
+    Read for one thing only: the ``D8C vs D8A`` RNA block, which is the single
+    non-vs-D2 transcriptome comparison the manuscript publishes (S1-1 carries
+    only the four vs-D2 contrasts).
+
+    NOTE this sheet labels its comparisons **numerator-first** — "D8C vs D8A"
+    really is log2(D8C/D8A) — which is the *opposite* of S2-1, where
+    "D8A vs. D8C" also means log2(D8C/D8A). Verified: this sheet's
+    ``D8C vs D2 RNA_log2FoldChange`` reproduces S1-1's
+    ``log2FoldChange_D8C_vs_D2``.
+    """
+    return pd.read_excel(
+        SOURCE / "data_s2.xlsx",
+        sheet_name="Data S2-2 Bulk RNA vs WP",
+        header=2,
+    )
+
+
+@lru_cache(maxsize=1)
 def load_s1_1() -> pd.DataFrame:
     """Supplementary sheet S1-1 (bulk RNA-seq): DESeq2 results vs D2, one wide
     block per comparison. Two title rows precede the header (``header=2``)."""
@@ -94,8 +117,13 @@ def load_s3_1() -> pd.DataFrame:
 
 # whole-proteome / reactivity condition columns, in display order
 FIVE_CONDITIONS = ["D2", "D4A", "D4C", "D8A", "D8C"]
-# vs-D2 comparisons we surface, in display order (mirrors FIVE_CONDITIONS - D2)
+# vs-D2 comparisons we surface, in display order (mirrors FIVE_CONDITIONS - D2).
+# A bare condition code means "that condition vs D2" — the implicit reference
+# every per-gene view uses.
 FOUR_COMPARISONS = ["D4A", "D4C", "D8A", "D8C"]
+# comparisons that are *not* against D2, written "<numerator>_vs_<denominator>"
+# so the reference is explicit wherever a bare code would be ambiguous.
+EXTRA_COMPARISONS = ["D8C_vs_D8A"]
 
 
 def _pct_to_log2fc(pct: pd.Series) -> pd.Series:
@@ -316,43 +344,60 @@ def build_proteome_replicates() -> pd.DataFrame:
     ]
 
 
-@lru_cache(maxsize=1)
-def _d2_below_detection() -> pd.DataFrame:
-    """(uniprot, condition) pairs whose D2 reference was below detection in a
-    replicate that contributes to that condition.
+@lru_cache(maxsize=None)
+def _ref_below_detection(ref: str = "D2") -> pd.DataFrame:
+    """(uniprot, condition) pairs whose ``ref`` denominator was below detection
+    in a replicate that contributes to that condition.
 
-    Percent-of-control is undefined without a D2 reference: we censor it at the
-    limit of detection, which makes the ratio a *lower bound* rather than a
-    measurement. The published S2-1 statistics instead average the raw zero into
-    the D2 denominator, which halves it and inflates the fold change — for
-    AFAP1L2 D8C by ~1.19 log2, enough to make it the most extreme point in the
-    D8C volcano. Those comparisons are dropped from the volcano (see
-    :func:`build_volcano`) and flagged here for the per-gene view.
+    A fold change is undefined without a reference channel: we censor a zero one
+    at the limit of detection, which makes the ratio a *lower bound* rather than
+    a measurement. The published S2-1 statistics instead average the raw zero
+    into the denominator, which halves it and inflates the fold change. Those
+    comparisons are dropped from the volcano (see :func:`build_volcano`) and
+    flagged for the per-gene view.
 
-    Derived from :func:`_s2_1_replicate_pct` so "contributes" keeps exactly one
-    definition (not absent, not below detection on both sides).
+    ``ref`` is parameterized because the volcano carries two kinds of
+    comparison. With ``ref="D2"`` it inflates AFAP1L2's D8C fold change by
+    ~1.19 log2, enough to make it the most extreme point in that panel. With
+    ``ref="D8A"`` — the denominator of the D8C-vs-D8A comparison — the same
+    rep5 dropout inflates AFAP1L2 to +4.68 and TNFRSF4 to +2.87 log2.
+
+    "Contributes" keeps exactly one definition, the same one :func:`_censor`
+    applies: the reference channel is empty while the numerator is not. A
+    replicate empty on *both* sides carries no information either way and is
+    already excluded upstream, so it is not a hit here.
     """
-    reps = _s2_1_replicate_pct()
     df = load_s2_1()
-    d2_zero = pd.concat(
-        [
-            pd.DataFrame(
-                {
-                    "uniprot": df["uniprot"],
-                    "rep": f"rep{rep}",
-                    "d2_zero": (_s2_1_chan_mean(df, "D2", rep) == 0).values,
-                }
+    frames = []
+    for rep in PROTEOME_REPS:
+        den = _s2_1_chan_mean(df, ref, rep)
+        for cond in FIVE_CONDITIONS:
+            if cond == ref:
+                continue
+            num = _s2_1_chan_mean(df, cond, rep)
+            hit = (den == 0) & num.notna() & (num != 0)
+            if not hit.any():
+                continue
+            frames.append(
+                pd.DataFrame(
+                    {"uniprot": df.loc[hit, "uniprot"].values, "condition": cond}
+                )
             )
-            for rep in PROTEOME_REPS
-        ],
-        ignore_index=True,
-    )
-    hit = reps.merge(d2_zero[d2_zero["d2_zero"]], on=["uniprot", "rep"], how="inner")
+    cols = ["uniprot", "condition"]
+    hits = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=cols)
     return (
-        hit[["uniprot", "condition"]]
+        hits[cols]
         .drop_duplicates()
-        .assign(d2_below_detection=True)
+        .assign(below_detection=True)
         .reset_index(drop=True)
+    )
+
+
+def _d2_below_detection() -> pd.DataFrame:
+    """The vs-D2 case of :func:`_ref_below_detection`, under the column name
+    :func:`build_proteome` publishes."""
+    return _ref_below_detection("D2").rename(
+        columns={"below_detection": "d2_below_detection"}
     )
 
 
@@ -525,24 +570,56 @@ VOLCANO_FLAGS = [
     "nucleotide_metabolism",
     "endoplasmic_reticulum",
 ]
-# vs-D2 comparisons we surface, in display order (mirrors FIVE_CONDITIONS − D2)
-VOLCANO_COMPARISONS = FOUR_COMPARISONS
+# comparisons we surface, in display order: the four vs-D2 panels, then the
+# chronic-vs-acute contrast at day 8.
+VOLCANO_COMPARISONS = FOUR_COMPARISONS + EXTRA_COMPARISONS
+
+# comparison id -> the S2-1 block label fragment that carries it.
+#
+# S2-1's labels are REVERSED — they read "<denominator> vs. <numerator>" but the
+# values carry numerator/denominator. So "D2 vs. D4A" is log2(D4A/D2), and
+# "D8A vs. D8C" is log2(D8C/D8A). (Verified: log2_FC "D2 vs. D8A" is the exact
+# negation of log2_FC "D8A vs. D2", and "D8A vs. D8C" reproduces
+# log2(mean(D8C)/mean(D8A)) from the expression table at corr 0.97.)
+#
+# Spelled out rather than matched by regex because the sheet ships eight blocks
+# and we want five: a pattern like "(\w+) vs\. (\w+)" would also pick up
+# D8A-vs-D4A / D8A-vs-D4C / D8A-vs-D2, which the portal does not plot. Each
+# fragment below is unique among the eight, so substring matching is safe.
+_S2_1_VOLCANO_BLOCK = {
+    "D4A": "D2 vs. D4A",
+    "D4C": "D2 vs. D4C",
+    "D8A": "D2 vs. D8A",
+    "D8C": "D2 vs. D8C",
+    "D8C_vs_D8A": "D8A vs. D8C",
+}
+
+# denominator condition per comparison, for the below-detection exclusion
+VOLCANO_REFERENCE = {c: "D2" for c in FOUR_COMPARISONS} | {"D8C_vs_D8A": "D8A"}
+
+# the five statistics each comparison contributes, in emit order. Shared with
+# etl/prerender.py, which rebuilds the same download columns from parquet.
+VOLCANO_STATS = ["log2fc", "p_value", "neglog10_pval", "neglog10_padj",
+                 "regulation"]
 
 
 def _volcano_suffix_by_cond(df: pd.DataFrame) -> dict[str, str]:
-    """Map each comparison code (e.g. "D4A") -> the exact S2-1 column suffix.
+    """Map each comparison id (e.g. "D4A", "D8C_vs_D8A") -> the exact S2-1
+    column suffix, e.g. ``Exhaustion WP - D2 vs. D4A (6315 Proteins)``.
 
-    S2-1 volcano columns are suffixed with a label like
-    ``…_Exhaustion WP - D2 vs. D4A``. The values already carry the
-    <cond>-vs-D2 sign (up in dysfunction = positive), despite the reversed
-    label wording. We match only the ``D2 vs. …`` blocks, which selects the
-    four vs-D2 comparisons and ignores the extra D8A-vs-D4A/D4C/D8C blocks.
+    The sheet stamps the protein count into every suffix, so it cannot be
+    hardcoded; we find the one ``log2_FC_`` column whose suffix contains the
+    block fragment from :data:`_S2_1_VOLCANO_BLOCK`.
     """
     suffix_by_cond: dict[str, str] = {}
     for col in df.columns:
-        m = re.match(r"log2_FC_(.* - D2 vs\. (D\w+) .*)", str(col))
-        if m:
-            suffix_by_cond[m.group(2)] = m.group(1)
+        m = re.match(r"log2_FC_(.+)", str(col))
+        if not m:
+            continue
+        suffix = m.group(1)
+        for cid, fragment in _S2_1_VOLCANO_BLOCK.items():
+            if fragment in suffix:
+                suffix_by_cond[cid] = suffix
     return suffix_by_cond
 
 
@@ -579,24 +656,36 @@ def build_volcano() -> pd.DataFrame:
     # drop proteins with no measured FC in a comparison (all-NaN rows)
     out = out.dropna(subset=["log2fc", "neglog10_padj"]).reset_index(drop=True)
 
-    # Drop comparisons whose D2 reference was below detection in a contributing
-    # replicate. The published log2FC divides by a D2 mean that averaged in a
-    # raw zero, inflating the fold change (AFAP1L2 D8C by ~1.19 log2, making it
-    # the most extreme point in that volcano) — and its p-value cannot be
-    # recomputed here, so correcting the x-position in place would pair a value
-    # with a statistic never computed from it. The protein keeps its per-gene
-    # view, where the censored value is shown with a low-confidence note.
-    excl = _d2_below_detection().rename(columns={"condition": "comparison"})
+    # Drop comparisons whose reference channel was below detection in a
+    # contributing replicate. The published log2FC divides by a denominator mean
+    # that averaged in a raw zero, inflating the fold change (AFAP1L2 D8C by
+    # ~1.19 log2 against D2, and by far more against D8A) — and its p-value
+    # cannot be recomputed here, so correcting the x-position in place would
+    # pair a value with a statistic never computed from it. The protein keeps
+    # its per-gene view, where the censored value carries a low-confidence note.
+    #
+    # The reference differs by comparison: D2 for the four vs-D2 panels, D8A for
+    # D8C-vs-D8A. _ref_below_detection is keyed by the *numerator* condition, so
+    # each reference's table is filtered to the comparisons that use it.
+    excl = pd.concat(
+        [
+            _ref_below_detection(ref)
+            .assign(comparison=cid)
+            .loc[lambda d: d["condition"] == cid.split("_vs_")[0]]
+            for cid, ref in VOLCANO_REFERENCE.items()
+        ],
+        ignore_index=True,
+    )[["uniprot", "comparison", "below_detection"]]
     before = len(out)
     out = (
         out.merge(excl, on=["uniprot", "comparison"], how="left")
-        .query("d2_below_detection.isna()")
-        .drop(columns="d2_below_detection")
+        .query("below_detection.isna()")
+        .drop(columns="below_detection")
         .reset_index(drop=True)
     )
     if before != len(out):
         print(f"  volcano: dropped {before - len(out)} row(s) with a "
-              f"below-detection D2 reference")
+              f"below-detection reference channel")
 
     out["comparison"] = pd.Categorical(
         out["comparison"], categories=VOLCANO_COMPARISONS, ordered=True
@@ -631,8 +720,37 @@ def _rna_regulation(log2fc: pd.Series, padj: pd.Series) -> pd.Series:
     )
 
 
+def _rna_d8c_vs_d8a() -> pd.DataFrame:
+    """The D8C-vs-D8A transcriptome block, from supplementary sheet S2-2.
+
+    S1-1 publishes only the four vs-D2 DESeq2 contrasts, so this one comparison
+    comes from S2-2 instead. Both are the same transcriptome-wide fit — S2-2's
+    ``D8C vs D2`` column reproduces S1-1's, and its ``D8C vs D8A`` column
+    reproduces the analysis repo's DESeq2 output exactly.
+
+    Read as labelled: S2-2 is numerator-first (see :func:`load_s2_2`), the
+    opposite of S2-1's reversed convention, so no sign flip here.
+
+    S2-2's own ``regulation_protein_rna`` column is deliberately ignored — it is
+    a plot colour code ("dark grey", "purple", …) for a different figure, not a
+    significance call. :func:`_rna_regulation` supplies the call so all five
+    panels share one rule, one legend, and one palette.
+    """
+    s2 = load_s2_2().drop_duplicates(subset=["protein"])
+    return pd.DataFrame(
+        {
+            "symbol": s2["protein"].values,
+            "condition": "D8C_vs_D8A",
+            "log2fc": s2["D8C vs D8A RNA_log2FoldChange"].values,
+            "padj": s2["D8C vs D8A RNA_padj"].values,
+            # S2-2 carries no baseMean; the column exists for the vs-D2 rows
+            "base_mean": np.nan,
+        }
+    )
+
+
 def build_rna_volcano() -> pd.DataFrame:
-    """Transcriptome volcano data -> long table, one row per (gene x vs-D2
+    """Transcriptome volcano data -> long table, one row per (gene x
     comparison), **restricted to genes with matched whole-proteome data**.
 
     Same shape as :func:`build_volcano` so the two share a figure builder. The
@@ -641,20 +759,29 @@ def build_rna_volcano() -> pd.DataFrame:
     without the transcriptome's extra ~11k unmeasured-by-MS genes changing the
     shape of the cloud.
 
+    Covers the four vs-D2 comparisons (S1-1, via :func:`build_rna`) plus
+    D8C-vs-D8A (S2-2, via :func:`_rna_d8c_vs_d8a`). The two sources are
+    concatenated *before* the shared tail below so every comparison goes through
+    one gene restriction, one null drop, one padj floor and one regulation call.
+
     ``padj`` comes from the transcriptome-wide DESeq2 fit and is **not**
     recomputed on the subset — re-running the multiplicity correction over 6.2k
     genes would produce numbers that disagree with rna.csv and with the
     manuscript. The figure annotates this.
     """
-    rna = build_rna()
+    sources = [build_rna(), _rna_d8c_vs_d8a()]
+    rna = pd.concat([s for s in sources if not s.empty], ignore_index=True)
     matched = set(build_proteome()["symbol"])
     out = rna[rna["symbol"].isin(matched)].copy()
     # DESeq2 leaves padj null wherever independent filtering removed the gene
     # from the multiplicity correction; those genes have no y-position.
     out = out.dropna(subset=["log2fc", "padj"]).reset_index(drop=True)
 
-    # a padj of exactly 0 (underflow) would plot at +inf, which parquet and
+    # A padj of exactly 0 (underflow) would plot at +inf, which parquet and
     # Plotly both choke on — pin it just above the smallest positive padj.
+    # The floor is pooled across comparisons, so adding one can lower it and
+    # shift the handful of already-clamped points; that is intended, and a
+    # changed y-maximum is not a bug.
     positive = out.loc[out["padj"] > 0, "padj"]
     floor = float(positive.min()) if len(positive) else np.nan
     out["neglog10_padj"] = -np.log10(out["padj"].mask(out["padj"] <= 0, floor))
@@ -682,6 +809,12 @@ def build_proteome_download() -> pd.DataFrame:
     layout of supplementary sheet S2-1: identity columns, per-biological-replicate
     percent-of-control values (technical pairs averaged, D2-normalized), the
     per-comparison volcano/significance columns, and the functional-group flags.
+
+    Comparisons whose reference channel was below detection are blanked, exactly
+    as :func:`build_volcano` withholds their plotted point. This file has two
+    build paths — here from the S2-1 xlsx, and in ``etl/prerender.py`` from the
+    committed parquet, which is what CI ships — and the parquet no longer
+    carries those rows. Blanking here is what keeps the two byte-identical.
     """
     df = load_s2_1()
     out = df[["uniprot", "protein", "description"]].rename(
@@ -709,6 +842,11 @@ def build_proteome_download() -> pd.DataFrame:
         out[f"{cond}_neglog10_pval"] = df[f"-log10_pval_{suffix}"]
         out[f"{cond}_neglog10_padj"] = df[f"-log10_pval_adj_{suffix}"]
         out[f"{cond}_regulation"] = df[f"Regulation_{suffix}"]
+        excl = _ref_below_detection(VOLCANO_REFERENCE[cond])
+        withheld = out["uniprot"].isin(
+            excl.loc[excl["condition"] == cond.split("_vs_")[0], "uniprot"]
+        )
+        out.loc[withheld, [f"{cond}_{s}" for s in VOLCANO_STATS]] = np.nan
     # functional-group flags (global, not per-comparison)
     for f in VOLCANO_FLAGS:
         if f in df.columns:
@@ -912,8 +1050,9 @@ DATA_DICTIONARY = """\
 T cell dysfunction proteomics data portal — bulk download
 =========================================================
 
-All fold changes are expressed as log2 fold-change relative to the D2
-(baseline / non-dysfunctional) condition.
+Fold changes are expressed as log2 fold-change relative to the D2 (baseline /
+non-dysfunctional) condition, except where a column name gives the reference
+explicitly: a column named "A_vs_B" is log2(A/B), numerator first.
 
 Conditions (A = Acute, C = Chronic stimulation; number = day):
   D2   baseline / reference   D4A  day-4 acute    D4C  day-4 chronic
@@ -936,18 +1075,28 @@ whole_proteome.csv
         reference was. Where both channels were empty the ratio carries no
         information and the replicate is omitted for that condition.
 
-      NOTE the portal's volcano plot omits any (protein x comparison) whose D2
-      reference was below detection in a contributing replicate. The published
-      log2FC there divides by a D2 mean that averaged in a raw zero, which
-      halves the denominator and inflates the fold change (for AFAP1L2 D8C by
-      ~1.19 log2, making it the most extreme point in that comparison). The
-      statistics are still reported in this file as published; only the plotted
-      point is withheld, and the protein keeps its per-gene view.
+      NOTE the portal's volcano plot omits any (protein x comparison) whose
+      reference channel was below detection in a contributing replicate. The
+      published log2FC there divides by a denominator mean that averaged in a
+      raw zero, which halves it and inflates the fold change. The reference is
+      D2 for the vs-D2 comparisons (AFAP1L2 D8C is inflated by ~1.19 log2,
+      making it the most extreme point in that panel) and D8A for D8C_vs_D8A
+      (AFAP1L2 +4.68, TNFRSF4 +2.87). The protein keeps its per-gene view.
+      Those three (protein x comparison) cells are blank in the statistics
+      columns below, since this file is regenerated from the same table the
+      plot reads. Everything else is reproduced as published.
       * {cond}_log2fc / _p_value / _neglog10_pval / _neglog10_padj / _regulation:
         volcano statistics for each cond-vs-D2 comparison (cond in D4A/D4C/D8A/D8C).
         regulation is the published significance call. These are reproduced here
         as published, including comparisons the portal's volcano plot omits (see
-        below) — so this file remains a faithful copy of the source statistics.
+        above) — so this file remains a faithful copy of the source statistics.
+      * D8C_vs_D8A_log2fc / _p_value / _neglog10_pval / _neglog10_padj /
+        _regulation: the same five statistics for day-8 chronic over day-8
+        acute. Named numerator-first because, unlike the bare-condition columns
+        above, this comparison is not against D2 — the value is
+        log2(D8C/D8A), positive meaning higher under chronic stimulation.
+        (Source: sheet S2-1's "D8A vs. D8C" block, whose label is reversed
+        relative to its values, as all of that sheet's labels are.)
       * mitochondrial, peroxisome, redox_related, cell_cycle,
         nucleotide_metabolism, endoplasmic_reticulum: boolean functional-group
         flags (global, not per-comparison).

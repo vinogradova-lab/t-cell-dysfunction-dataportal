@@ -545,8 +545,22 @@ def reactivity_atp_figure(
 
 
 # --------------------------------------------------------------------------- #
-# whole-proteome volcano — dataset-wide (all proteins for one vs-D2 comparison)
+# whole-proteome volcano — dataset-wide (all proteins for one comparison)
 # --------------------------------------------------------------------------- #
+def _volcano_x_title(comparison: str) -> str:
+    """x-axis title naming the comparison's reference condition.
+
+    A bare comparison id ("D8C") is against D2, the implicit reference the whole
+    portal uses. An id written "<numerator>_vs_<denominator>" names both. This
+    axis is the only place the reference appears, which is what lets the
+    comparison picker's labels stay short (see store.VOLCANO_COMPARISONS).
+    """
+    if "_vs_" in comparison:
+        num, den = comparison.split("_vs_", 1)
+        return f"log₂(FC, {num} / {den})"
+    return "log₂(FC from D2)"
+
+
 def volcano_figure(
     df: pl.DataFrame,
     comparison: str,
@@ -559,7 +573,7 @@ def volcano_figure(
     fc_cutoff: float = FC_CUTOFF,
     note: str | None = None,
 ) -> go.Figure:
-    """Volcano for one comparison: x = log2FC vs D2, y = a −log10 significance.
+    """Volcano for one comparison: x = log2FC, y = a −log10 significance.
 
     One WebGL scatter trace per regulation category (so the legend doubles as a
     show/hide toggle and significant points draw on top). ``highlight`` pins a
@@ -671,7 +685,7 @@ def volcano_figure(
             xanchor="right", yanchor="bottom", showarrow=False,
             font=dict(size=11, color="#6b7280"),
         )
-    fig.update_xaxes(title="log₂(FC from D2)", zeroline=False)
+    fig.update_xaxes(title=_volcano_x_title(comparison), zeroline=False)
     fig.update_yaxes(title=y_title, zeroline=False)
     return fig
 
