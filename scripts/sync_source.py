@@ -30,9 +30,14 @@ DEFAULT_SOURCE_REPO = PORTAL_ROOT.parent / "t-cell-dysfunction-2026"
 # intermediates. The date-stamped filenames change between manuscript revisions,
 # so we glob for the current ``Data S1*.xlsx`` / ``Data S2*.xlsx`` below.
 SOURCE_FILES = {
-    # RNA per-sample VST-normalized counts (for replicate overlays; not in the
-    # supplementary workbooks, so still staged from the analysis repo)
-    "data/rna/counts/normalized_counts.txt": "rna_counts.txt",
+    # RNA raw per-sample counts, for the replicate overlays (not in the
+    # supplementary workbooks, so still staged from the analysis repo). The ETL
+    # normalizes these itself with DESeq2 median-of-ratios size factors so the
+    # points land on the same log2 scale as S1-1's DESeq2 log2FoldChange.
+    # The sibling ``normalized_counts.txt`` is deliberately NOT used: differences
+    # within it are compressed ~1.49x and are not log2 ratios (see
+    # ``build_db.build_rna_replicates``).
+    "data/rna/counts/unnormalized_counts.txt": "rna_counts_raw.txt",
     # cysteine reactivity, 5-condition long format (LFC precomputed)
     "data/reactivity/reactivity_changes/output/03_reactivity_vs_wp/"
     "rc_df_long_format.csv": "reactivity_5cond.csv",

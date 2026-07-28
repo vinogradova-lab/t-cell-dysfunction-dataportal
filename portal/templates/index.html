@@ -109,9 +109,11 @@
       <p>Expression is the median over replicates in the cysteine reactivity
         plots, and the mean over replicates for the whole proteome expression
         plots.</p>
-      <p>Error bars on the whole proteome and RNA bar plots are &plusmn;1 SEM
-        over the replicates shown as points, on the log&#8322; fold-change
-        scale. Conditions with a single replicate have no bar.</p>
+      <p>Whole proteome bars are the mean of the replicates drawn over them,
+        with error bars of &plusmn;1 SEM over those replicates. RNA bars are
+        DESeq2's estimate rather than the mean of their points, so their error
+        bars are &plusmn;1 <code>lfcSE</code>, DESeq2's own standard error for
+        that estimate.</p>
       <p>In the cysteine reactivity ATP add-back plots, the box spans the
         interquartile range with the line at the median, and the whiskers reach
         the furthest replicates within 1.5&times; the IQR.</p>

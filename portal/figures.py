@@ -111,12 +111,20 @@ def _replicate_sem(reps_df: pl.DataFrame, order: list[str]) -> dict[str, float]:
     }
 
 
-def _error_y(sems: dict[str, float], conditions: list[str]) -> dict:
-    """SEM error bars for a bar trace. ``None`` leaves single-replicate
-    conditions with no bar rather than a misleading zero-length one."""
+def _error_y(errors: dict[str, float], conditions: list[str]) -> dict:
+    """Symmetric error bars for a bar trace, from condition -> half-width.
+
+    A missing or non-finite entry leaves that condition with no bar rather than
+    a misleading zero-length one — single-replicate proteome conditions have no
+    defined SEM, and DESeq2 leaves lfcSE null wherever it fit no model.
+    """
+    def _finite(c):
+        v = errors.get(c)
+        return v if v is not None and math.isfinite(v) else None
+
     return dict(
         type="data",
-        array=[sems.get(c) for c in conditions],
+        array=[_finite(c) for c in conditions],
         visible=True,
         color="#333",
         thickness=ERROR_BAR_LINE_WIDTH,
@@ -296,43 +304,42 @@ def rna_figure(
     padj = df["padj"].to_list()
     colors = [EXHAUSTION_COLS.get(c, "#888") for c in conditions]
 
-    # Bar = mean of the replicates shown (falls back to the DESeq2 estimate when
-    # per-replicate counts are unavailable for this gene). The DESeq2 model
-    # estimate is preserved in the hover.
-    has_reps = _has_reps(reps_df)
-    if has_reps:
-        lfc_means = _replicate_means(reps_df, FOUR_CONDITION_ORDER)
-        values = [lfc_means.get(c, d) for c, d in zip(conditions, deseq)]
-    else:
-        values = deseq
+    # Error bar = DESeq2's lfcSE, the GLM's own standard error for the log2FC the
+    # bar draws — so bar and interval describe one published quantity.
+    # Deliberately NOT the SEM of the replicate points below (which is what the
+    # proteome bars use, correctly, since their bar *is* the replicate mean):
+    # that SEM takes the spread of the three treatment samples about their own
+    # mean and treats the D2 reference as error-free, dropping the reference
+    # group's contribution entirely. It runs ~1.9x under lfcSE as a result.
+    lfc_se = (
+        df["lfc_se"].to_list() if "lfc_se" in df.columns else [None] * len(deseq)
+    )
 
-    if has_reps:
-        hovertemplate = (
-            "<b>%{x}</b><br>mean of replicates, log2FC = %{y:.2f}"
-            "<br>DESeq2 log2FC = %{customdata[1]:.2f}"
-            "<br>padj = %{customdata[0]:.2g}<extra></extra>"
-        )
-    else:
-        hovertemplate = (
-            "<b>%{x}</b><br>log2FC = %{y:.2f}"
-            "<br>padj = %{customdata[0]:.2g}<extra></extra>"
-        )
+    # Bar = the DESeq2 model estimate, which is exactly what the transcriptome
+    # volcano plots on its x axis and what rna.csv reports — so a gene's bar and
+    # its volcano point are the same number by construction, and cannot drift.
+    # (Deliberately NOT the mean of the replicates drawn over it: the proteome
+    # bars do that, but here the model estimate is the published quantity.) The
+    # replicates are normalized onto the same log2 scale in build_rna_replicates,
+    # so they still centre on the bar for any reasonably expressed gene.
+    has_reps = _has_reps(reps_df)
+
+    hovertemplate = (
+        "<b>%{x}</b><br>DESeq2 log2FC = %{y:.2f} ± %{customdata[1]:.2f}"
+        "<br>padj = %{customdata[0]:.2g}<extra></extra>"
+    )
 
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
             x=conditions,
-            y=values,
+            y=deseq,
             marker_color=colors,
             marker_line_color="#333",
             marker_line_width=0.5,
             width=0.5,
-            error_y=(
-                _error_y(
-                    _replicate_sem(reps_df, FOUR_CONDITION_ORDER), conditions
-                ) if has_reps else None
-            ),
-            customdata=[[p, d] for p, d in zip(padj, deseq)],
+            error_y=_error_y(dict(zip(conditions, lfc_se)), conditions),
+            customdata=[[p, s] for p, s in zip(padj, lfc_se)],
             hovertemplate=hovertemplate,
         )
     )

@@ -434,13 +434,17 @@ def build_proteome() -> pd.DataFrame:
     ]
 
 
-# sample column prefix (e.g. "Sample_D8.Chr.2_IGO_...") -> (condition, rep)
-_RNA_SAMPLE_RE = re.compile(r"^Sample_(D2|D4|D8)(?:\.(Ac|Chr))?\.(\d+)_")
+# Sample column -> (condition, rep). The raw count matrix names its columns after
+# the bam paths ("sorted_bam_files/Sample_D4-Ac-1_IGO_13524_4_sorted.bam"), so this
+# has to be searched rather than matched, and it accepts either separator: the
+# featureCounts output hyphenates where the older normalized matrix used dots.
+_RNA_SAMPLE_RE = re.compile(r"Sample_(D2|D4|D8)[.-]?(?:(Ac|Chr)[.-])?(\d+)_IGO")
 
 
 def _rna_sample_meta(col: str) -> tuple[str, str] | None:
-    """'Sample_D8.Chr.2_IGO_13524_14' -> ('D8C', 'rep2'); D2 -> ('D2', ...)."""
-    m = _RNA_SAMPLE_RE.match(col)
+    """'…/Sample_D8-Chr-2_IGO_13524_14_sorted.bam' -> ('D8C', 'rep2'); D2 ->
+    ('D2', …). Returns None for the annotation columns (Chr/Start/End/…)."""
+    m = _RNA_SAMPLE_RE.search(col)
     if not m:
         return None
     day, ac, rep = m.group(1), m.group(2), m.group(3)
@@ -448,26 +452,61 @@ def _rna_sample_meta(col: str) -> tuple[str, str] | None:
     return cond, f"rep{rep}"
 
 
-def build_rna_replicates() -> pd.DataFrame:
-    """Per-sample VST-normalized counts -> long per-replicate log2FC from D2.
+def _size_factors(counts: pd.DataFrame) -> pd.Series:
+    """Library-size factors, one per sample column, by median of ratios.
 
-    ``normalized_counts.txt`` holds VST (log2-scale) counts, one column per
-    sample. Per gene, each non-D2 sample's log2FC is its value minus the mean of
-    that gene's D2 replicates. D2 itself is the reference (log2FC = 0) and is not
-    emitted, matching the RNA figure's four displayed conditions.
+    This reimplements DESeq2's ``estimateSizeFactors`` here rather than calling
+    it — the ETL is pure Python and takes no R dependency. Only this step is
+    reproduced: there is no GLM, no dispersion estimation and no shrinkage, which
+    is why the replicate points it feeds are supporting evidence and the bar
+    itself stays S1-1's published DESeq2 estimate.
+
+    The reference is the per-gene geometric mean taken over genes counted in
+    **every** sample — DESeq2's own rule, since a single zero sends the geometric
+    mean to zero and makes the gene carry no information about library size. Each
+    sample's factor is then the median of its ratios to that reference.
     """
-    counts = pd.read_csv(SOURCE / "rna_counts.txt", sep="\t", index_col=0)
-    meta = {c: _rna_sample_meta(c) for c in counts.columns}
+    positive = counts[(counts > 0).all(axis=1)]
+    log_counts = np.log(positive)
+    return np.exp(log_counts.sub(log_counts.mean(axis=1), axis=0).median(axis=0))
+
+
+def build_rna_replicates() -> pd.DataFrame:
+    """Raw per-sample counts -> long per-replicate log2FC from D2.
+
+    ``rna_counts_raw.txt`` is the analysis repo's featureCounts matrix: gene
+    annotation columns (Chr/Start/End/Strand/Length) followed by one raw-count
+    column per bam. We normalize it here with DESeq2 median-of-ratios size
+    factors and take log2(count + 0.5) — the pseudocount ``DESeq2::plotCounts``
+    uses, which only bites on the ~11% of displayed cells whose count is zero.
+    Per gene, each non-D2 sample's log2FC is its value minus the mean of that
+    gene's D2 replicates. D2 itself is the reference (log2FC = 0) and is not
+    emitted, matching the RNA figure's four displayed conditions.
+
+    Doing the normalization here rather than reading the analysis repo's
+    ``normalized_counts.txt`` is deliberate. Differences within that matrix are
+    **not** log2 ratios: regressed against S1-1's DESeq2 ``log2FoldChange`` they
+    come out compressed by a near-constant factor (slope 1.488, R^2 0.996 for
+    baseMean > 1000, and worse at low counts), which had the bar chart
+    understating every fold change against an axis labelled log2FC. Normalizing
+    the raw counts instead reproduces the DESeq2 estimates to a median of 0.002
+    for baseMean > 100, so the per-gene bars and the volcano agree.
+    """
+    raw = pd.read_csv(SOURCE / "rna_counts_raw.txt", sep="\t", index_col=0)
+    meta = {c: _rna_sample_meta(c) for c in raw.columns}
     meta = {c: m for c, m in meta.items() if m is not None}
+    counts = raw[list(meta)].astype(float)
+
+    lognorm = np.log2(counts.div(_size_factors(counts), axis=1) + 0.5)
     d2_cols = [c for c, (cond, _) in meta.items() if cond == "D2"]
-    d2_mean = counts[d2_cols].mean(axis=1)
+    d2_mean = lognorm[d2_cols].mean(axis=1)
 
     order = ["D4A", "D4C", "D8A", "D8C"]
     rows = []
     for col, (cond, rep) in meta.items():
         if cond == "D2":
             continue
-        lfc = counts[col] - d2_mean
+        lfc = lognorm[col] - d2_mean
         rows.append(
             pd.DataFrame(
                 {"symbol": counts.index, "condition": cond, "rep": rep, "log2fc": lfc.values}
@@ -493,6 +532,11 @@ def build_rna() -> pd.DataFrame:
                 "symbol": df["symbol"],
                 "condition": cond,
                 "log2fc": df[f"log2FoldChange_{cond}_vs_D2"],
+                # the GLM's own standard error for that log2FC — what the bar
+                # chart draws as its error bar, since the bar is the log2FC.
+                # Verified to pair with it: stat == log2FoldChange / lfcSE
+                # exactly, so these are unshrunken Wald results.
+                "lfc_se": df[f"lfcSE_{cond}_vs_D2"],
                 "padj": df[f"padj_{cond}_vs_D2"],
                 "base_mean": df[f"baseMean_{cond}_vs_D2"],
             }
@@ -1107,12 +1151,20 @@ rna.csv
     Bulk RNA-seq differential expression vs D2 (DESeq2). One row per (gene x condition).
     Restricted to protein-coding genes (NCBI Gene, tax 9606); non-coding
     transcripts (lncRNA, miRNA, pseudogenes, …) are excluded.
-    columns: symbol, condition, log2fc, padj, base_mean
+    lfc_se is DESeq2's standard error for log2fc, from the negative-binomial GLM
+    with its dispersion shrunk toward the transcriptome-wide mean-dispersion
+    trend. It does not shrink to zero with sequencing depth: at high counts it is
+    dominated by biological overdispersion, not counting noise.
+    columns: symbol, condition, log2fc, lfc_se, padj, base_mean
 
 rna_replicates.csv
-    Per-replicate RNA log2FC from VST-normalized counts (value minus per-gene D2
-    mean). One row per (gene x condition x replicate). Note these differ from the
-    model-based DESeq2 log2fc in rna.csv. Protein-coding genes only (as rna.csv).
+    Per-replicate RNA log2FC. One row per (gene x condition x replicate). Raw
+    counts are normalized with DESeq2 median-of-ratios size factors, taken as
+    log2(count + 0.5), and expressed relative to the per-gene D2 mean. These
+    agree closely with the model-based DESeq2 log2fc in rna.csv (median absolute
+    difference 0.002 for genes with baseMean > 100); expect them to diverge for
+    very low-count genes, where the GLM estimate and a raw count ratio legitimately
+    differ. Protein-coding genes only (as rna.csv).
     columns: symbol, condition, rep, log2fc
 
 reactivity_5cond.csv
