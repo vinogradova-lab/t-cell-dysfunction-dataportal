@@ -29,7 +29,10 @@ _TABLE_FILES = {
     "rna_replicates": "rna_replicates.parquet",
     "reactivity": "reactivity.parquet",
     "reactivity_atp": "reactivity_atp.parquet",
+    # download-only: no per-gene view, so not a modality
+    "metabolomics": "metabolomics.parquet",
     "volcano": "volcano.parquet",
+    "rna_volcano": "rna_volcano.parquet",
 }
 
 MODALITIES = ["proteome", "rna", "reactivity", "reactivity_atp"]
@@ -41,6 +44,16 @@ VOLCANO_COMPARISONS = [
     ("D8A", "Day 8, Acute"),
     ("D8C", "Day 8, Chronic"),
 ]
+
+# volcano dataset id -> (parquet table, picker label). Both datasets cover the
+# same four vs-D2 comparisons; the RNA one is restricted to genes that also have
+# whole-proteome data, so the two plot the same gene universe.
+VOLCANO_DATASETS = [
+    ("proteome", "volcano", "Whole proteome"),
+    ("rna", "rna_volcano", "Transcriptome (matched genes)"),
+]
+_VOLCANO_TABLE = {ds: table for ds, table, _ in VOLCANO_DATASETS}
+DEFAULT_VOLCANO_DATASET = VOLCANO_DATASETS[0][0]
 
 
 class Store:
@@ -142,18 +155,36 @@ class Store:
         return table.filter(pl.col("symbol") == symbol)
 
     # ---- volcano (dataset-wide) ---------------------------------------- #
-    def volcano_comparisons(self) -> list[dict]:
+    def volcano_datasets(self) -> list[dict]:
+        """Volcano datasets that have a table loaded, for the dataset picker."""
+        return [
+            {"id": ds, "label": label}
+            for ds, table, label in VOLCANO_DATASETS
+            if table in self.tables
+        ]
+
+    def volcano_comparisons(
+        self, dataset: str = DEFAULT_VOLCANO_DATASET
+    ) -> list[dict]:
         """Available vs-D2 comparisons that actually have volcano data."""
-        present = set(self.tables["volcano"]["comparison"].unique().to_list())
+        table = _VOLCANO_TABLE.get(dataset)
+        if table is None or table not in self.tables:
+            return []
+        present = set(self.tables[table]["comparison"].unique().to_list())
         return [
             {"id": cid, "label": label}
             for cid, label in VOLCANO_COMPARISONS
             if cid in present
         ]
 
-    def volcano_slice(self, comparison: str) -> pl.DataFrame:
-        """All proteins for one comparison (empty frame if unknown)."""
-        return self.tables["volcano"].filter(pl.col("comparison") == comparison)
+    def volcano_slice(
+        self, comparison: str, dataset: str = DEFAULT_VOLCANO_DATASET
+    ) -> pl.DataFrame:
+        """All points for one (dataset, comparison) — empty frame if unknown."""
+        table = _VOLCANO_TABLE.get(dataset)
+        if table is None or table not in self.tables:
+            return pl.DataFrame()
+        return self.tables[table].filter(pl.col("comparison") == comparison)
 
 
 @lru_cache(maxsize=1)

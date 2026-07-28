@@ -9,8 +9,9 @@ GET /                                   the single-page app
 GET /api/search?q=<query>               autocomplete over symbol/uniprot/alias
 GET /api/gene/<symbol>                  metadata + which modalities have data
 GET /api/gene/<symbol>/<modality>       Plotly figure JSON (204 if no data)
-GET /api/volcano/comparisons            available whole-proteome volcano comparisons
-GET /api/volcano/<comparison>           volcano figure JSON (?highlight=<symbol>)
+GET /api/volcano/datasets               available volcano datasets (proteome / rna)
+GET /api/volcano/<dataset>/comparisons  available comparisons for a dataset
+GET /api/volcano/<dataset>/<comparison> volcano figure JSON (?highlight=<symbol>)
 GET /api/downloads                      bulk-download manifest
 GET /downloads/<file>                   bulk-download files (nginx serves these
                                         in production; this is a dev fallback)
@@ -23,7 +24,7 @@ from functools import lru_cache
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from flask import render_template
 
-from figures import BUILDERS, volcano_figure
+from figures import BUILDERS, VOLCANO_BUILDERS
 from store import DOWNLOAD_DIR, MODALITIES, get_store
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -63,35 +64,48 @@ def api_gene_modality(symbol: str, modality: str):
     return Response(fig.to_json(), mimetype="application/json")
 
 
-# ---- whole-proteome volcano (dataset-wide) ---------------------------- #
-@app.route("/api/volcano/comparisons")
-def api_volcano_comparisons():
-    return jsonify(get_store().volcano_comparisons())
+# ---- volcanoes (dataset-wide) ----------------------------------------- #
+@app.route("/api/volcano/datasets")
+def api_volcano_datasets():
+    return jsonify(get_store().volcano_datasets())
 
 
-@lru_cache(maxsize=8)
-def _volcano_json(comparison: str) -> str | None:
+@app.route("/api/volcano/<dataset>/comparisons")
+def api_volcano_comparisons(dataset: str):
+    comparisons = get_store().volcano_comparisons(dataset)
+    if not comparisons:
+        abort(404, description=f"unknown volcano dataset: {dataset}")
+    return jsonify(comparisons)
+
+
+@lru_cache(maxsize=16)
+def _volcano_json(dataset: str, comparison: str) -> str | None:
     """Base (un-highlighted) volcano figure JSON, cached — it's static."""
-    df = get_store().volcano_slice(comparison)
+    builder = VOLCANO_BUILDERS.get(dataset)
+    if builder is None:
+        return None
+    df = get_store().volcano_slice(comparison, dataset)
     if df.is_empty():
         return None
-    return volcano_figure(df, comparison).to_json()
+    return builder(df, comparison).to_json()
 
 
-@app.route("/api/volcano/<comparison>")
-def api_volcano(comparison: str):
+@app.route("/api/volcano/<dataset>/<comparison>")
+def api_volcano(dataset: str, comparison: str):
     store = get_store()
+    builder = VOLCANO_BUILDERS.get(dataset)
     highlight = request.args.get("highlight")
-    if highlight:
+    if builder is not None and highlight:
         # highlighted variant is cheap and gene-specific, so build fresh
-        df = store.volcano_slice(comparison)
-        if df.is_empty():
-            abort(404, description=f"unknown comparison: {comparison}")
-        fig = volcano_figure(df, comparison, highlight=highlight)
-        return Response(fig.to_json(), mimetype="application/json")
-    payload = _volcano_json(comparison)
+        df = store.volcano_slice(comparison, dataset)
+        if not df.is_empty():
+            fig = builder(df, comparison, highlight=highlight)
+            return Response(fig.to_json(), mimetype="application/json")
+        payload = None
+    else:
+        payload = _volcano_json(dataset, comparison)
     if payload is None:
-        abort(404, description=f"unknown comparison: {comparison}")
+        abort(404, description=f"unknown volcano: {dataset}/{comparison}")
     return Response(payload, mimetype="application/json")
 
 
@@ -101,6 +115,7 @@ _DOWNLOAD_ITEMS = [
     ("Bulk RNA-seq", "rna"),
     ("Cysteine reactivity (5 conditions)", "reactivity_5cond"),
     ("Cysteine reactivity, ATP add-back", "reactivity_atp"),
+    ("Polar metabolomics", "metabolomics"),
 ]
 
 

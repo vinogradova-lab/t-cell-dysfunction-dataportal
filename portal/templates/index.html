@@ -25,11 +25,19 @@
           cysteine-reactivity changes across T cell dysfunction conditions.
         </p>
         <p class="header-links">
-          <a class="manuscript-link"
+          <a class="header-link manuscript-link"
              href="https://www.biorxiv.org/content/10.64898/2026.03.04.709614v1"
              target="_blank" rel="noopener noreferrer">
             Read the manuscript on bioRxiv
             <span aria-hidden="true">↗</span>
+          </a>
+          <a class="header-link lab-link" href="https://www.vardhanalab.com/"
+             target="_blank" rel="noopener noreferrer">
+            Vardhana Lab <span aria-hidden="true">↗</span>
+          </a>
+          <a class="header-link lab-link" href="https://vinogradovalab.com/"
+             target="_blank" rel="noopener noreferrer">
+            Vinogradova Lab <span aria-hidden="true">↗</span>
           </a>
         </p>
       </div>
@@ -61,16 +69,25 @@
 
     <section id="volcano-section" class="volcano">
       <div class="volcano-head">
+        <!-- initial paint only: app.js rewrites both from VOLCANO_COPY as soon
+             as it knows the active dataset, so keep this the default one -->
         <div>
-          <h2>Whole-proteome volcano</h2>
-          <p class="muted">Differential protein abundance vs D2 across the
-            proteome. Each point is a protein; click one to open its per-gene
-            view. Dashed guides mark ±1.5-fold and p&nbsp;=&nbsp;0.05.</p>
+          <h2 id="volcano-title">Whole-proteome volcano</h2>
+          <p class="muted" id="volcano-blurb">Differential protein abundance vs
+            D2 across the proteome. Each point is a protein; click one to open
+            its per-gene view. Dashed guides mark ±1.5-fold and
+            p&nbsp;=&nbsp;0.05.</p>
         </div>
-        <label class="volcano-picker">
-          <span>Comparison</span>
-          <select id="volcano-comparison"></select>
-        </label>
+        <div class="volcano-pickers">
+          <label class="volcano-picker">
+            <span>Dataset</span>
+            <select id="volcano-dataset"></select>
+          </label>
+          <label class="volcano-picker">
+            <span>Comparison</span>
+            <select id="volcano-comparison"></select>
+          </label>
+        </div>
       </div>
       <div id="volcano-plot" class="plot volcano-plot"></div>
     </section>
@@ -87,6 +104,9 @@
       <p>Data from the T cell dysfunction study. Conditions: D2 (baseline),
         D4/D8 &times; Acute (A) / Chronic (C).
         Reactivity ATP add-back adds ±ATP variants.</p>
+      <p>Expression is the median over replicates in the cysteine reactivity
+        plots, and the mean over replicates for the whole proteome expression
+        plots.</p>
     </div>
   </footer>
 

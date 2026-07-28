@@ -31,10 +31,16 @@ body {
 .site-header h1 { margin: 0 0 6px; font-size: 1.7rem; letter-spacing: -.01em; }
 .tagline { margin: 0; max-width: 380px; opacity: .92; font-size: .98rem; }
 
-.header-links { margin: 12px 0 0; }
-/* pill rather than a bare link: it has to read as a target against the
+.header-links {
+  margin: 12px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* pills rather than bare links: they have to read as targets against the
    gradient, where a plain underline washes out */
-.manuscript-link {
+.header-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -48,12 +54,20 @@ body {
   text-decoration: none;
   transition: background .15s ease, border-color .15s ease;
 }
-.manuscript-link:hover,
-.manuscript-link:focus-visible {
+.header-link:hover,
+.header-link:focus-visible {
   background: rgba(255, 255, 255, .22);
   border-color: rgba(255, 255, 255, .85);
 }
-.manuscript-link span { font-size: .85em; opacity: .85; }
+.header-link span { font-size: .85em; opacity: .85; }
+/* the lab links sit beside the manuscript link; a lighter fill keeps the
+   manuscript (the primary call to action) ahead of them in the row */
+.lab-link {
+  background: transparent;
+  border-color: rgba(255, 255, 255, .35);
+  font-weight: 400;
+  font-size: .88rem;
+}
 
 /* Two-column header: lede on the left, data-generation schematic on the right */
 .header-grid {
@@ -226,6 +240,7 @@ main.wrap { padding-top: 28px; padding-bottom: 40px; }
 }
 .volcano-head h2 { margin: 0 0 4px; font-size: 1.2rem; }
 .volcano-head .muted { max-width: 640px; }
+.volcano-pickers { display: flex; flex-wrap: wrap; gap: 12px; }
 .volcano-picker {
   display: flex; flex-direction: column; gap: 4px;
   font-size: .8rem; color: var(--muted); white-space: nowrap;
@@ -272,6 +287,7 @@ main.wrap { padding-top: 28px; padding-bottom: 40px; }
 /* footer */
 .site-footer { border-top: 1px solid var(--line); padding: 20px 0; color: var(--muted); }
 .site-footer p { margin: 0; font-size: .85rem; }
+.site-footer p + p { margin-top: 6px; }
 
 @media (max-width: 520px) {
   .charts { grid-template-columns: 1fr; }

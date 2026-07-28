@@ -25,6 +25,7 @@ from palette import (
     PVAL_CUTOFF,
     REACTIVITY_GUIDE,
     REGULATION_COLORS,
+    RNA_FC_CUTOFF,
     VOLCANO_HIGHLIGHT,
     VOLCANO_REG_COLORS,
     VOLCANO_REG_ORDER,
@@ -335,7 +336,9 @@ def rna_figure(
             hovertemplate=hovertemplate,
         )
     )
-    for y in (FC_CUTOFF, -FC_CUTOFF):
+    # ±log2(2) guides, not the proteome's ±log2(1.5): the RNA views are held to
+    # the stricter cutoff the transcriptome volcano calls significance on.
+    for y in (RNA_FC_CUTOFF, -RNA_FC_CUTOFF):
         fig.add_hline(y=y, line_dash="dash", line_color="#bbb", line_width=1)
     fig.add_hline(y=0, line_color="#666", line_width=1)
     if has_reps:
@@ -545,13 +548,29 @@ def reactivity_atp_figure(
 # whole-proteome volcano — dataset-wide (all proteins for one vs-D2 comparison)
 # --------------------------------------------------------------------------- #
 def volcano_figure(
-    df: pl.DataFrame, comparison: str, highlight: str | None = None
+    df: pl.DataFrame,
+    comparison: str,
+    highlight: str | None = None,
+    *,
+    y_col: str = "neglog10_pval",
+    p_col: str = "p_value",
+    p_label: str = "p",
+    y_title: str = "−log₁₀(p)",
+    fc_cutoff: float = FC_CUTOFF,
+    note: str | None = None,
 ) -> go.Figure:
-    """Volcano for one comparison: x = log2FC vs D2, y = −log10(adj p).
+    """Volcano for one comparison: x = log2FC vs D2, y = a −log10 significance.
 
     One WebGL scatter trace per regulation category (so the legend doubles as a
     show/hide toggle and significant points draw on top). ``highlight`` pins a
     single protein with a labelled marker — used to locate the searched gene.
+
+    The keyword arguments exist so the transcriptome volcano
+    (:func:`rna_volcano_figure`) can reuse this body: it plots DESeq2's adjusted
+    p against a 2-fold cutoff, where the whole proteome plots the manuscript's
+    raw p against 1.5-fold. Everything else — the WebGL layering, the pin, the
+    annotation that has to sit above the gl canvas — is identical and must not
+    be duplicated.
     """
     if df.is_empty():
         return _empty("No volcano data")
@@ -565,7 +584,7 @@ def volcano_figure(
             go.Scattergl(
                 name=reg,
                 x=sub["log2fc"].to_list(),
-                y=sub["neglog10_pval"].to_list(),
+                y=sub[y_col].to_list(),
                 mode="markers",
                 marker=dict(
                     color=VOLCANO_REG_COLORS.get(reg, "#888"),
@@ -575,18 +594,19 @@ def volcano_figure(
                 ),
                 # customdata[0] = symbol drives click-through to the gene page
                 customdata=[[s, p] for s, p in zip(
-                    sub["symbol"].to_list(), sub["p_value"].to_list()
+                    sub["symbol"].to_list(), sub[p_col].to_list()
                 )],
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>log2FC = %{x:.2f}"
-                    "<br>p = %{customdata[1]:.2g}"
+                    f"<br>{p_label} = %{{customdata[1]:.2g}}"
                     f"<br>{reg}<extra></extra>"
                 ),
             )
         )
 
-    # significance guides: vertical ±log2(1.5), horizontal at the p cutoff
-    for x in (FC_CUTOFF, -FC_CUTOFF):
+    # significance guides: vertical at the fold-change cutoff, horizontal at the
+    # p cutoff (0.05 on whichever p the dataset calls significance with)
+    for x in (fc_cutoff, -fc_cutoff):
         fig.add_vline(x=x, line_dash="dash", line_color="#bbb", line_width=1)
     fig.add_hline(
         y=-np.log10(PVAL_CUTOFF), line_dash="dash", line_color="#bbb",
@@ -599,7 +619,7 @@ def volcano_figure(
         pin = df.filter(pl.col("symbol") == highlight)
         if not pin.is_empty():
             r = pin.row(0, named=True)
-            hx, hy = r["log2fc"], r["neglog10_pval"]
+            hx, hy = r["log2fc"], r[y_col]
             # Marker: a Scattergl trace added *last*, so it draws on top of the
             # WebGL point cloud (SVG traces can't — the gl canvas sits above the
             # SVG layer). A filled dot with a white halo reads clearly on top.
@@ -617,7 +637,7 @@ def volcano_figure(
                     ),
                     hovertemplate=(
                         f"<b>{highlight}</b><br>log2FC = %{{x:.2f}}"
-                        f"<br>p = {r['p_value']:.2g}<extra></extra>"
+                        f"<br>{p_label} = {r[p_col]:.2g}<extra></extra>"
                     ),
                     showlegend=False,
                 )
@@ -644,9 +664,47 @@ def volcano_figure(
         **layout,
         legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
     )
+    if note:
+        # sits under the legend row, above the plotting area
+        fig.add_annotation(
+            text=note, xref="paper", yref="paper", x=1, y=1.0,
+            xanchor="right", yanchor="bottom", showarrow=False,
+            font=dict(size=11, color="#6b7280"),
+        )
     fig.update_xaxes(title="log₂(FC from D2)", zeroline=False)
-    fig.update_yaxes(title="−log₁₀(p)", zeroline=False)
+    fig.update_yaxes(title=y_title, zeroline=False)
     return fig
+
+
+def rna_volcano_figure(
+    df: pl.DataFrame, comparison: str, highlight: str | None = None
+) -> go.Figure:
+    """Transcriptome volcano, restricted to genes with matched proteomic data.
+
+    Same body as the whole-proteome volcano on a different significance basis:
+    DESeq2's adjusted p and a 2-fold cutoff, rather than the manuscript's raw p
+    and 1.5-fold. The note records the two things a reader can't see from the
+    cloud — that the gene universe is the matched ~6.2k rather than the whole
+    transcriptome, and that padj still comes from the transcriptome-wide fit.
+    """
+    return volcano_figure(
+        df,
+        comparison,
+        highlight,
+        y_col="neglog10_padj",
+        p_col="padj",
+        p_label="padj",
+        y_title="−log₁₀(adj. p)",
+        fc_cutoff=RNA_FC_CUTOFF,
+        note="genes with matched whole-proteome data; "
+             "adj. p from the transcriptome-wide fit",
+    )
+
+
+VOLCANO_BUILDERS = {
+    "proteome": volcano_figure,
+    "rna": rna_volcano_figure,
+}
 
 
 BUILDERS = {

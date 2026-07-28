@@ -24,16 +24,41 @@ const PLOT_OPTS = {
   modeBarButtonsToRemove: ["lasso2d", "select2d"],
 };
 
+// per-dataset headline + caption for the volcano section. Kept next to the
+// figure code rather than in index.html so the stated cutoffs can't drift away
+// from the ones figures.py actually draws.
+const VOLCANO_COPY = {
+  proteome: {
+    title: "Whole-proteome volcano",
+    blurb:
+      "Differential protein abundance vs D2 across the proteome. Each point is " +
+      "a protein; click one to open its per-gene view. Dashed guides mark " +
+      "±1.5-fold and p = 0.05.",
+  },
+  rna: {
+    title: "Transcriptome volcano",
+    blurb:
+      "Differential mRNA abundance vs D2, restricted to the ~6.2k genes that " +
+      "also have whole-proteome data, so the two volcanoes cover one gene " +
+      "universe. Each point is a gene; click one to open its per-gene view. " +
+      "Dashed guides mark ±2-fold and adjusted p = 0.05.",
+  },
+};
+
 const searchInput = document.getElementById("search");
 const suggestionsEl = document.getElementById("suggestions");
 const geneView = document.getElementById("gene-view");
 const geneHeader = document.getElementById("gene-header");
 const chartsEl = document.getElementById("charts");
+const volcanoDatasetSelect = document.getElementById("volcano-dataset");
 const volcanoSelect = document.getElementById("volcano-comparison");
 const volcanoPlot = document.getElementById("volcano-plot");
+const volcanoTitle = document.getElementById("volcano-title");
+const volcanoBlurb = document.getElementById("volcano-blurb");
 
 let currentGene = null;
 let currentComparison = null;
+let currentDataset = null;
 
 let activeIndex = -1;
 let currentSuggestions = [];
@@ -253,22 +278,64 @@ async function selectGene(symbol, updateUrl = true) {
   }
 }
 
-// ---- whole-proteome volcano (dataset-wide) --------------------------- //
-const volcanoCache = {}; // comparison -> {data, layout}
+// ---- volcanoes (dataset-wide) ---------------------------------------- //
+const volcanoCache = {}; // "dataset:comparison" -> {data, layout}
 
 async function initVolcano() {
-  if (!volcanoSelect || !volcanoPlot) return;
+  if (!volcanoSelect || !volcanoDatasetSelect || !volcanoPlot) return;
+  let datasets;
+  try {
+    const res = await fetch("api/volcano/datasets.json");
+    datasets = await res.json();
+  } catch (err) {
+    datasets = [];
+  }
+  if (!datasets.length) {
+    document.getElementById("volcano-section")?.remove();
+    return;
+  }
+  volcanoDatasetSelect.innerHTML = "";
+  datasets.forEach((d) => {
+    const opt = document.createElement("option");
+    opt.value = d.id;
+    opt.textContent = d.label;
+    volcanoDatasetSelect.appendChild(opt);
+  });
+  // a single dataset needs no picker, but the section still works
+  volcanoDatasetSelect.closest(".volcano-picker").hidden = datasets.length < 2;
+  volcanoDatasetSelect.addEventListener("change", () =>
+    selectVolcanoDataset(volcanoDatasetSelect.value)
+  );
+  volcanoSelect.addEventListener("change", () =>
+    loadVolcano(currentDataset, volcanoSelect.value)
+  );
+  await selectVolcanoDataset(datasets[0].id);
+}
+
+// swap datasets: refill the comparison picker, keeping the current comparison
+// selected when the new dataset also offers it (both cover the same four).
+async function selectVolcanoDataset(dataset) {
   let comparisons;
   try {
-    const res = await fetch("api/volcano/comparisons.json");
+    const res = await fetch(`api/volcano/${dataset}/comparisons.json`);
+    if (!res.ok) throw new Error("comparisons error");
     comparisons = await res.json();
   } catch (err) {
     comparisons = [];
   }
   if (!comparisons.length) {
-    document.getElementById("volcano-section")?.remove();
+    volcanoPlot.innerHTML = `<p class="error">Could not load the volcano plot.</p>`;
     return;
   }
+  currentDataset = dataset;
+  const copy = VOLCANO_COPY[dataset];
+  if (copy) {
+    if (volcanoTitle) volcanoTitle.textContent = copy.title;
+    if (volcanoBlurb) volcanoBlurb.textContent = copy.blurb;
+  }
+  const keep = comparisons.some((c) => c.id === currentComparison)
+    ? currentComparison
+    : null;
   volcanoSelect.innerHTML = "";
   comparisons.forEach((c) => {
     const opt = document.createElement("option");
@@ -276,25 +343,27 @@ async function initVolcano() {
     opt.textContent = `${c.label} (${c.id}) vs D2`;
     volcanoSelect.appendChild(opt);
   });
-  volcanoSelect.addEventListener("change", () => loadVolcano(volcanoSelect.value));
   // default to the most dysfunctional comparison if present, else the first
-  const preferred = comparisons.find((c) => c.id === "D8C") || comparisons[0];
-  volcanoSelect.value = preferred.id;
-  loadVolcano(preferred.id);
+  const preferred =
+    keep || (comparisons.find((c) => c.id === "D8C") || comparisons[0]).id;
+  volcanoSelect.value = preferred;
+  await loadVolcano(dataset, preferred);
 }
 
 let volcanoLoadSeq = 0;
 
-async function loadVolcano(comparison) {
+async function loadVolcano(dataset, comparison) {
+  currentDataset = dataset;
   currentComparison = comparison;
+  const key = `${dataset}:${comparison}`;
   const seq = ++volcanoLoadSeq;
-  let fig = volcanoCache[comparison];
+  let fig = volcanoCache[key];
   if (!fig) {
     try {
-      const res = await fetch(`api/volcano/${comparison}.json`);
+      const res = await fetch(`api/volcano/${dataset}/${comparison}.json`);
       if (!res.ok) throw new Error("volcano error");
       fig = await res.json();
-      volcanoCache[comparison] = fig;
+      volcanoCache[key] = fig;
     } catch (err) {
       volcanoPlot.innerHTML = `<p class="error">Could not load the volcano plot.</p>`;
       return;
@@ -308,10 +377,13 @@ async function loadVolcano(comparison) {
   const layout = JSON.parse(JSON.stringify(fig.layout));
   await Plotly.newPlot(volcanoPlot, data, layout, {
     ...PLOT_OPTS,
-    toImageButtonOptions: { format: "svg", filename: `volcano_${comparison}` },
+    toImageButtonOptions: {
+      format: "svg",
+      filename: `volcano_${dataset}_${comparison}`,
+    },
   });
   if (currentGene) pinVolcano(fig, currentGene);
-  // click a point -> open that protein's per-gene view
+  // click a point -> open that gene's per-gene view
   volcanoPlot.on("plotly_click", (ev) => {
     const pt = ev.points && ev.points[0];
     const sym = pt && pt.customdata && pt.customdata[0];
@@ -336,6 +408,8 @@ function pinVolcano(fig, symbol) {
     if (hx !== undefined) break;
   }
   if (hx === undefined) return; // gene not in this comparison
+  // customdata[1] is whichever p the dataset called significance with
+  const pLabel = currentDataset === "rna" ? "padj" : "p";
   Plotly.addTraces(volcanoPlot, {
     type: "scattergl",
     name: symbol,
@@ -349,11 +423,15 @@ function pinVolcano(fig, symbol) {
       line: { width: 2.5, color: "#ffffff" },
     },
     hovertemplate:
-      `<b>${symbol}</b><br>log2FC = %{x:.2f}<br>p = ${fmtSig(hp)}<extra></extra>`,
+      `<b>${symbol}</b><br>log2FC = %{x:.2f}` +
+      `<br>${pLabel} = ${fmtSig(hp)}<extra></extra>`,
     showlegend: false,
   });
+  // append, don't replace: relayout swaps the whole annotations array, and the
+  // RNA volcano ships one from the server (the matched-genes caveat).
   Plotly.relayout(volcanoPlot, {
     annotations: [
+      ...(fig.layout.annotations || []),
       {
         x: hx,
         y: hy,
@@ -372,7 +450,9 @@ function pinVolcano(fig, symbol) {
 
 // re-pin the volcano on the currently active gene without a full page change
 function refreshVolcanoHighlight() {
-  if (currentComparison) loadVolcano(currentComparison);
+  if (currentDataset && currentComparison) {
+    loadVolcano(currentDataset, currentComparison);
+  }
 }
 
 // ---- downloads panel ------------------------------------------------- //

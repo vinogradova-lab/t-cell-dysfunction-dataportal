@@ -46,11 +46,14 @@ SOURCE_FILES = {
 # Supplementary workbooks (glob pattern relative to the analysis repo -> dest
 # name). Data S1 sheet "S1-1" holds the bulk-RNA DESeq2 results; Data S2 sheet
 # "S2-1" holds the whole-proteome per-replicate values + volcano/significance
-# columns + functional-group flags. Update the patterns if the manuscript
-# renames the files.
+# columns + functional-group flags; Data S3 sheet "S3-1" holds the polar
+# metabolomics (the portal ships it as a bulk download only, so the workbook's
+# other sheets — lipidomics and isotope tracing — are not read). Update the
+# patterns if the manuscript renames the files.
 SOURCE_GLOBS = {
     "supp_data/Data S1*.xlsx": "data_s1.xlsx",
     "supp_data/Data S2*.xlsx": "data_s2.xlsx",
+    "supp_data/Data S3*.xlsx": "data_s3.xlsx",
 }
 
 

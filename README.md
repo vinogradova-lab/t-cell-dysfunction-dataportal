@@ -24,6 +24,7 @@ these inputs; `sync_source.py` stages them into `source/` on demand.
 | RNA replicate overlays | VST-normalized counts | analysis repo |
 | Reactivity (5 cond) | log₂FC vs D2 per cysteine | analysis repo |
 | Reactivity ATP add-back | log₂FC vs D2, per replicate | analysis repo |
+| Polar metabolomics | channel ratios + per-comparison DE (download only) | Data S3, sheet `S3-1` |
 
 All fold changes are **log₂ fold-change relative to D2**. The date-stamped
 `Data S1*.xlsx` / `Data S2*.xlsx` filenames change between revisions, so
@@ -76,16 +77,25 @@ and fronts static assets and `/downloads/`.
 | `GET /api/search?q=<query>` | autocomplete over symbol / UniProt / alias |
 | `GET /api/gene/<symbol>` | metadata + which modalities have data |
 | `GET /api/gene/<symbol>/<modality>` | Plotly figure JSON (`204` if no data) |
-| `GET /api/volcano/comparisons` | whole-proteome volcano comparisons (vs D2) |
-| `GET /api/volcano/<comparison>` | volcano figure JSON (`?highlight=<symbol>` to pin a protein) |
+| `GET /api/volcano/datasets` | volcano datasets (`proteome`, `rna`) |
+| `GET /api/volcano/<dataset>/comparisons` | that dataset's comparisons (vs D2) |
+| `GET /api/volcano/<dataset>/<comparison>` | volcano figure JSON (`?highlight=<symbol>` to pin a gene) |
 | `GET /api/downloads` | bulk-download manifest |
 | `GET /downloads/<file>` | processed data files (CSV / ZIP) |
 
 `<modality>` ∈ `proteome`, `rna`, `reactivity`, `reactivity_atp`.
 `<comparison>` ∈ `D4A`, `D4C`, `D8A`, `D8C` (each vs D2). Unlike the per-gene
-routes, the volcano is **dataset-wide** — all proteins for one comparison, each
-point clickable through to that protein's per-gene view.
+routes, the volcanoes are **dataset-wide** — every gene for one comparison, each
+point clickable through to that gene's per-gene view.
 Deep links: `/?gene=MAP2K4` opens straight to a gene (shareable / citable).
+
+The two volcanoes call significance differently, on purpose. The whole-proteome
+one reproduces the manuscript's published `Regulation` column: raw p < 0.05 with
+|log₂FC| ≥ log₂(1.5). The transcriptome one uses DESeq2's adjusted p < 0.05 with
+|log₂FC| ≥ log₂(2) — the same 2-fold guides the per-gene RNA bar chart draws —
+and is restricted to the ~6.2k genes that also have whole-proteome data, so the
+two plots cover one gene universe. That `padj` comes from the transcriptome-wide
+fit; it is not recomputed over the matched subset.
 
 ## Layout
 

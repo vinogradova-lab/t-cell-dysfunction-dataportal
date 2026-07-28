@@ -79,6 +79,19 @@ def load_s1_1() -> pd.DataFrame:
     return pd.read_excel(SOURCE / "data_s1.xlsx", sheet_name=0, header=2)
 
 
+@lru_cache(maxsize=1)
+def load_s3_1() -> pd.DataFrame:
+    """Supplementary sheet S3-1 (polar metabolomics): compound annotations,
+    per-sample channel ratios and raw intensities, and the differential
+    block for six pairwise comparisons. Two title rows precede the header
+    (``header=2``), as in S1-1/S2-1."""
+    return pd.read_excel(
+        SOURCE / "data_s3.xlsx",
+        sheet_name="S3-1 Polar metabolites",
+        header=2,
+    )
+
+
 # whole-proteome / reactivity condition columns, in display order
 FIVE_CONDITIONS = ["D2", "D4A", "D4C", "D8A", "D8C"]
 # vs-D2 comparisons we surface, in display order (mirrors FIVE_CONDITIONS - D2)
@@ -591,6 +604,79 @@ def build_volcano() -> pd.DataFrame:
     return out
 
 
+# RNA volcano significance rule. Deliberately *not* the proteome's rule: the
+# published S2-1 call is raw p < 0.05 with |log2FC| >= log2(1.5), while DESeq2
+# gives a multiplicity-corrected padj for every gene, so the RNA volcano uses
+# padj with the stricter 2-fold cutoff. The per-gene RNA bar chart draws its
+# dashed guides at the same RNA_FC_CUTOFF (see figures.rna_figure).
+RNA_PADJ_CUTOFF = 0.05
+RNA_FC_CUTOFF = 1.0  # log2(2)
+
+
+def _rna_regulation(log2fc: pd.Series, padj: pd.Series) -> pd.Series:
+    """Volcano regulation call, reusing the S2-1 category vocabulary so both
+    volcanoes share one legend, palette, and draw order."""
+    sig = padj < RNA_PADJ_CUTOFF
+    big = log2fc.abs() >= RNA_FC_CUTOFF
+    up = log2fc > 0
+    return pd.Series(
+        np.select(
+            [sig & big & up, sig & big & ~up, sig & ~big, ~sig & big & up,
+             ~sig & big & ~up],
+            ["Significant Up", "Significant Down", "Significant but <2 FC",
+             "Not Significant Up", "Not Significant Down"],
+            default="Not Significant",
+        ),
+        index=log2fc.index,
+    )
+
+
+def build_rna_volcano() -> pd.DataFrame:
+    """Transcriptome volcano data -> long table, one row per (gene x vs-D2
+    comparison), **restricted to genes with matched whole-proteome data**.
+
+    Same shape as :func:`build_volcano` so the two share a figure builder. The
+    matched-gene restriction is the point of the plot: it puts the RNA and
+    protein volcanoes on one gene universe (~6.2k), so a reader can compare them
+    without the transcriptome's extra ~11k unmeasured-by-MS genes changing the
+    shape of the cloud.
+
+    ``padj`` comes from the transcriptome-wide DESeq2 fit and is **not**
+    recomputed on the subset — re-running the multiplicity correction over 6.2k
+    genes would produce numbers that disagree with rna.csv and with the
+    manuscript. The figure annotates this.
+    """
+    rna = build_rna()
+    matched = set(build_proteome()["symbol"])
+    out = rna[rna["symbol"].isin(matched)].copy()
+    # DESeq2 leaves padj null wherever independent filtering removed the gene
+    # from the multiplicity correction; those genes have no y-position.
+    out = out.dropna(subset=["log2fc", "padj"]).reset_index(drop=True)
+
+    # a padj of exactly 0 (underflow) would plot at +inf, which parquet and
+    # Plotly both choke on — pin it just above the smallest positive padj.
+    positive = out.loc[out["padj"] > 0, "padj"]
+    floor = float(positive.min()) if len(positive) else np.nan
+    out["neglog10_padj"] = -np.log10(out["padj"].mask(out["padj"] <= 0, floor))
+    out["regulation"] = _rna_regulation(out["log2fc"], out["padj"])
+
+    desc = (
+        load_s2_1()[["protein", "description"]]
+        .rename(columns={"protein": "symbol"})
+        .drop_duplicates(subset=["symbol"])
+    )
+    out = out.merge(desc, on="symbol", how="left")
+    out = out.rename(columns={"condition": "comparison"})
+    out["comparison"] = pd.Categorical(
+        out["comparison"], categories=VOLCANO_COMPARISONS, ordered=True
+    )
+    out = out.sort_values(["comparison", "symbol"])
+    return out[
+        ["symbol", "description", "comparison", "log2fc", "padj",
+         "neglog10_padj", "base_mean", "regulation"]
+    ].reset_index(drop=True)
+
+
 def build_proteome_download() -> pd.DataFrame:
     """Single combined whole-proteome table for the bulk download, mirroring the
     layout of supplementary sheet S2-1: identity columns, per-biological-replicate
@@ -661,6 +747,162 @@ def build_reactivity_atp() -> pd.DataFrame:
         ["uniprot", "symbol", "residue", "residue_loc", "condition",
          "rep", "percent_control", "lfc"]
     ]
+
+
+# --------------------------------------------------------------------------- #
+# polar metabolomics (Data S3-1)
+# --------------------------------------------------------------------------- #
+# The portal ships metabolomics as a bulk download only — no per-gene view — so
+# this table *is* the download: the parquet round-trips straight to CSV in both
+# etl/build_db.py and etl/prerender.py.
+
+# S3-1 annotation columns -> snake_case. Mapped explicitly rather than derived:
+# the workbook's "Super Pathway" header is truncated mid-parenthesis, so any
+# rule that rewrote the header text would have to encode that typo anyway.
+METABOLITE_ANNOTATION_COLS = {
+    "Compound": "compound",
+    "HMDB": "hmdb",
+    "KEGG": "kegg",
+    "Alias": "alias",
+    "Pathway": "pathway",
+    "Metabolite Class (Vardhana lab)": "metabolite_class",
+    "Super Pathway (MSK metabolomics Core dMRM method": "super_pathway",
+    "Chemical Taxonomy, Super Class (HMDB)": "hmdb_super_class",
+    "Chemical Taxonomy, Sub Class (HMDB)": "hmdb_sub_class",
+}
+
+# per-sample value blocks: workbook column suffix -> ours, in emit order
+METABOLITE_VALUE_SUFFIXES = {
+    "cell-volume-normalized-QRILC-imputation": "channel_ratio",
+    "raw-signal-intensity": "raw_intensity",
+}
+
+# statistic name in the S3-1 differential block -> our column suffix
+METABOLITE_STATS = {
+    "p_value": "p_value",
+    "log2_FC": "log2fc",
+    "-log10_pval": "neglog10_pval",
+    "-log10_pval_adj": "neglog10_padj",
+    "Regulation": "regulation",
+}
+
+# metabolomics comparisons as (numerator, denominator), in display order: the
+# four vs-D2 contrasts, then the acute-vs-chronic pair at each timepoint.
+METABOLITE_COMPARISONS = [
+    ("D4A", "D2"),
+    ("D4C", "D2"),
+    ("D8A", "D2"),
+    ("D8C", "D2"),
+    ("D4C", "D4A"),
+    ("D8C", "D8A"),
+]
+
+# "<stat>_metabolomics - <den> vs. <num> (174 Metabolites)". Note the *reversed*
+# wording: as in S2-1, the values carry the second-named condition over the
+# first (verified — "D2 vs. D8C" reproduces log2(mean(D8C)/mean(D2)) exactly).
+# The trailing group catches pandas' ".1" rename of the duplicate block.
+_METAB_STAT_RE = re.compile(
+    r"^(?P<stat>.+?)_metabolomics - (?P<den>\S+) vs\. (?P<num>\S+) \(.*?\)"
+    r"(?P<dup>\.\d+)?$"
+)
+
+# "D8C_ZC2_S58_<suffix>" -> condition / donor / sample id
+_METAB_SAMPLE_RE = re.compile(
+    r"^(?P<cond>D2|D4A|D4C|D8A|D8C)_(?P<donor>[^_]+)_(?P<sample>[^_]+)_"
+    r"(?P<suffix>.+)$"
+)
+
+
+def _metabolite_sample_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
+    """(source column, renamed column) for the per-sample value blocks.
+
+    Re-sorted into channel-ratio-then-raw, donor, condition, sample order. The
+    workbook's own column order interleaves the donors and puts NL57's D8C block
+    ahead of its D2 block, which makes the CSV awkward to read side by side.
+    """
+    cond_rank = {c: i for i, c in enumerate(FIVE_CONDITIONS)}
+    suffix_rank = {s: i for i, s in enumerate(METABOLITE_VALUE_SUFFIXES)}
+    found = []
+    for col in df.columns:
+        m = _METAB_SAMPLE_RE.match(str(col))
+        if m is None or m.group("suffix") not in METABOLITE_VALUE_SUFFIXES:
+            continue
+        cond, donor, sample, suffix = m.group("cond", "donor", "sample", "suffix")
+        found.append(
+            (
+                (suffix_rank[suffix], donor, cond_rank[cond], sample),
+                col,
+                f"{cond}_{donor}_{sample}_{METABOLITE_VALUE_SUFFIXES[suffix]}",
+            )
+        )
+    return [(col, new) for _, col, new in sorted(found)]
+
+
+def _metabolite_stat_cols(df: pd.DataFrame) -> dict[tuple[str, str], dict[str, str]]:
+    """(numerator, denominator) -> {statistic: source column}.
+
+    S3-1 carries every differential block **twice**; pandas renames the second
+    copy with a ``.1`` suffix. The copies are identical, so we keep the first
+    and verify the duplicate agrees rather than trusting the layout — a future
+    revision that made them differ would otherwise be silently halved.
+    """
+    blocks: dict[tuple[str, str], dict[str, str]] = {}
+    for col in df.columns:
+        m = _METAB_STAT_RE.match(str(col))
+        if m is None or m.group("stat") not in METABOLITE_STATS:
+            continue
+        key = (m.group("num"), m.group("den"))
+        stat = m.group("stat")
+        if m.group("dup"):
+            first = blocks.get(key, {}).get(stat)
+            if first is not None and not df[first].equals(df[col]):
+                raise ValueError(
+                    f"S3-1 duplicate block disagrees with the original: "
+                    f"{col!r} != {first!r}"
+                )
+            continue
+        blocks.setdefault(key, {})[stat] = col
+    return blocks
+
+
+def build_metabolomics() -> pd.DataFrame:
+    """Polar metabolomics -> one row per compound, wide, mirroring S3-1.
+
+    Annotation columns, then per-sample channel ratios and raw signal
+    intensities (4 donors x 5 conditions x 3 injections), then the differential
+    block for each comparison. Comparison columns are named numerator-first
+    (``D8C_vs_D2_log2fc``) because the workbook labels them the other way round
+    while carrying the numerator-first sign — and because metabolomics, unlike
+    the whole proteome, also contrasts conditions that are not D2.
+    """
+    df = load_s3_1()
+    missing = [c for c in METABOLITE_ANNOTATION_COLS if c not in df.columns]
+    if missing:
+        raise KeyError(f"S3-1 is missing expected annotation column(s): {missing}")
+
+    # source column -> output name, in emit order; sliced in one pass at the end
+    # (160-odd sequential assignments would fragment the frame).
+    picked: list[tuple[str, str]] = [
+        (col, new) for col, new in METABOLITE_ANNOTATION_COLS.items()
+    ]
+    picked += _metabolite_sample_cols(df)
+
+    blocks = _metabolite_stat_cols(df)
+    for num, den in METABOLITE_COMPARISONS:
+        block = blocks.get((num, den))
+        if block is None:
+            continue
+        picked += [
+            (block[stat], f"{num}_vs_{den}_{suffix}")
+            for stat, suffix in METABOLITE_STATS.items()
+            if stat in block
+        ]
+
+    return (
+        df[[col for col, _ in picked]]
+        .set_axis([new for _, new in picked], axis=1)
+        .reset_index(drop=True)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -744,9 +986,37 @@ reactivity_atp.csv
     columns: uniprot, symbol, residue, residue_loc, condition, rep,
              percent_control (D2=100), lfc
 
-Provenance: whole proteome and bulk RNA-seq are read from the manuscript
-supplementary workbooks (Data S1, Data S2); the remaining tables are derived
-from the analysis repository t-cell-dysfunction-2026.
+metabolomics.csv
+    Polar metabolite abundance (LC-MS/MS), one row per compound (wide,
+    mirroring supplementary sheet S3-1). Data are from n = 4 donors (LSP75,
+    NL57, ZC1, ZC2), three injections each per condition. 174 of the 203
+    metabolites reported by the MSK metabolomics core passed the signal
+    filter (at least one condition averaging above 5000 raw intensity);
+    missing values were imputed by quantile regression imputation of
+    left-censored data (QRILC).
+      * compound, hmdb, kegg, alias, pathway, metabolite_class,
+        super_pathway, hmdb_super_class, hmdb_sub_class: compound identity and
+        annotation. metabolite_class was curated by the Vardhana lab.
+      * {cond}_{donor}_{sample}_channel_ratio: cell-volume-normalized,
+        QRILC-imputed channel ratio (signal intensity divided by the sum of
+        that metabolite's intensities). This is the value all analyses use.
+      * {cond}_{donor}_{sample}_raw_intensity: the raw signal intensity the
+        ratio was computed from.
+      * {num}_vs_{den}_log2fc / _p_value / _neglog10_pval / _neglog10_padj /
+        _regulation: differential abundance for six comparisons — each of
+        D4A/D4C/D8A/D8C against D2, plus D4C vs D4A and D8C vs D8A.
+        p-values are two-sample t-tests; regulation is the published call.
+        NOTE these columns are named NUMERATOR FIRST: D8C_vs_D2_log2fc is
+        log2(D8C/D2). The source workbook labels the same block "D2 vs. D8C"
+        while carrying the D8C/D2 sign, so the names here are rewritten to
+        match the values rather than the label.
+    columns: compound + 8 annotation columns, 60 channel_ratio columns,
+             60 raw_intensity columns, 6 x 5 comparison columns
+
+Provenance: whole proteome, bulk RNA-seq, and polar metabolomics are read from
+the manuscript supplementary workbooks (Data S1, Data S2, Data S3); the
+remaining tables are derived from the analysis repository
+t-cell-dysfunction-2026.
 """
 
 # (parquet-table-name, download-basename) — tables written verbatim to the bundle
@@ -755,6 +1025,7 @@ DOWNLOAD_TABLES = [
     ("rna_replicates", "rna_replicates"),
     ("reactivity", "reactivity_5cond"),
     ("reactivity_atp", "reactivity_atp"),
+    ("metabolomics", "metabolomics"),
 ]
 # download basenames written to the zip, in order (combined WP first)
 DOWNLOAD_BASENAMES = ["whole_proteome"] + [b for _, b in DOWNLOAD_TABLES]
@@ -803,7 +1074,9 @@ def main() -> int:
         "rna_replicates": build_rna_replicates(),
         "reactivity": build_reactivity(),
         "reactivity_atp": build_reactivity_atp(),
+        "metabolomics": build_metabolomics(),
         "volcano": build_volcano(),
+        "rna_volcano": build_rna_volcano(),
     }
 
     # search registry: seed from proteome (uniprot+symbol+description) plus any

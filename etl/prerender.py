@@ -39,7 +39,7 @@ sys.path.insert(0, str(PORTAL_ROOT / "portal"))
 
 import build_db  # noqa: E402  (DATA_DICTIONARY, DOWNLOAD_TABLES, constants)
 from app import _DOWNLOAD_ITEMS  # noqa: E402  (download labels, DRY with the API)
-from figures import BUILDERS, volcano_figure  # noqa: E402
+from figures import BUILDERS, VOLCANO_BUILDERS  # noqa: E402
 from store import MODALITIES, Store  # noqa: E402
 
 STATIC_SUBDIRS = ["css", "js", "vendor", "img"]
@@ -123,15 +123,21 @@ def write_gene_bundles(
 def write_volcano(store: Store, api_dir: Path) -> None:
     vdir = api_dir / "volcano"
     vdir.mkdir(parents=True, exist_ok=True)
-    comparisons = store.volcano_comparisons()
-    (vdir / "comparisons.json").write_text(json.dumps(comparisons))
-    for c in comparisons:
-        df = store.volcano_slice(c["id"])
-        if df.is_empty():
-            continue
-        (vdir / f"{c['id']}.json").write_text(
-            json.dumps(_fig_json(volcano_figure(df, c["id"])), separators=(",", ":"))
-        )
+    datasets = store.volcano_datasets()
+    (vdir / "datasets.json").write_text(json.dumps(datasets))
+    for ds in datasets:
+        dsdir = vdir / ds["id"]
+        dsdir.mkdir(parents=True, exist_ok=True)
+        builder = VOLCANO_BUILDERS[ds["id"]]
+        comparisons = store.volcano_comparisons(ds["id"])
+        (dsdir / "comparisons.json").write_text(json.dumps(comparisons))
+        for c in comparisons:
+            df = store.volcano_slice(c["id"], ds["id"])
+            if df.is_empty():
+                continue
+            (dsdir / f"{c['id']}.json").write_text(
+                json.dumps(_fig_json(builder(df, c["id"])), separators=(",", ":"))
+            )
 
 
 # --------------------------------------------------------------------------- #
