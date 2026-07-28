@@ -9,7 +9,7 @@ const MODALITY_ORDER = ["rna", "proteome", "reactivity", "reactivity_atp"];
 const MODALITY_LABEL = {
   rna: "Transcriptomics (bulk RNA-seq)",
   proteome: "Whole proteome",
-  reactivity: "Cysteine reactivity (vs D2)",
+  reactivity: "Cysteine reactivity",
   reactivity_atp: "Cysteine reactivity — ATP add-back",
 };
 

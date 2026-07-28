@@ -31,6 +31,10 @@ REGULATION_COLORS = {
 
 # ATP add-back fills / outline / shapes (reactivity_visualization.Rmd 1171-1202)
 ATP_ORDER = ["D2", "D2-ATP", "D8A", "D8A-ATP", "D8C", "D8C-ATP"]
+# Legend reads as a 3x2 grid — one column per condition, "-ATP" variants on the
+# bottom row. Deliberately not ATP_ORDER, which keeps each base/+ATP pair
+# adjacent on the x axis.
+ATP_LEGEND_ORDER = ["D2", "D8A", "D8C", "D2-ATP", "D8A-ATP", "D8C-ATP"]
 ATP_FILLS = {
     "D2": "#A9A9A9",       # darkgrey
     "D2-ATP": "#FCFCFC",   # grey99

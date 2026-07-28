@@ -15,6 +15,7 @@ import polars as pl
 
 from palette import (
     ATP_FILLS,
+    ATP_LEGEND_ORDER,
     ATP_ORDER,
     ATP_OUTLINE,
     ATP_SYMBOLS,
@@ -515,6 +516,7 @@ def reactivity_atp_figure(
         fig.add_trace(
             go.Box(
                 name=cond,
+                legendrank=ATP_LEGEND_ORDER.index(cond) + 1,
                 x=sub["residue"].to_list(),
                 y=sub["lfc"].to_list(),
                 customdata=sub["rep"].to_list(),
@@ -544,7 +546,16 @@ def reactivity_atp_figure(
     fig.update_layout(
         **layout,
         boxmode="group",
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+        # entrywidth pins three entries per row so the 3x2 grid holds at any
+        # card width, instead of letting Plotly pick the wrap point.
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.0,
+            x=0,
+            entrywidthmode="fraction",
+            entrywidth=1 / 3,
+        ),
     )
     fig.update_yaxes(title="cysteine reactivity, log₂(FC from D2)", zeroline=False)
     fig.update_xaxes(title="cysteine site", categoryorder="array", categoryarray=residues)
