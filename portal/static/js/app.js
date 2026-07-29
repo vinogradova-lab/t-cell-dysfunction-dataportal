@@ -72,7 +72,6 @@ let currentSuggestions = [];
 let GENES = [];
 let GENE_BY_KEY = new Map(); // lowercased id AND label -> record
 let GENE_BY_SYMBOL = new Map(); // lowercased symbol -> that symbol's primary record
-let GENE_SIBLINGS = new Map(); // lowercased symbol -> records, only where > 1
 
 async function loadGenes() {
   const res = await fetch("api/genes.json");
@@ -87,7 +86,6 @@ async function loadGenes() {
   }));
   GENE_BY_KEY = new Map();
   GENE_BY_SYMBOL = new Map();
-  const bySymbol = new Map();
   for (const g of GENES) {
     GENE_BY_KEY.set(g.id.toLowerCase(), g);
     GENE_BY_KEY.set(g.label.toLowerCase(), g);
@@ -97,12 +95,7 @@ async function loadGenes() {
     if (!prev || (g.uniprot || "") < (prev.uniprot || "")) {
       GENE_BY_SYMBOL.set(g._s, g);
     }
-    if (!bySymbol.has(g._s)) bySymbol.set(g._s, []);
-    bySymbol.get(g._s).push(g);
   }
-  GENE_SIBLINGS = new Map(
-    [...bySymbol].filter(([, list]) => list.length > 1)
-  );
 }
 
 // Resolve anything that names a protein: an entry id, a display label, or a
@@ -207,32 +200,6 @@ function hideSuggestions() {
 }
 
 // ---- gene view ------------------------------------------------------- //
-// Where a symbol was measured under several accessions, each protein has its own
-// page — so each one points at the others. Without this the sibling is only
-// reachable by searching the symbol again, and for pairs that are really two
-// halves of one story (TMPO's LAP2 isoforms, POLR1D's) that is easy to miss.
-function siblingsHtml(meta) {
-  const siblings = (GENE_SIBLINGS.get(meta._s) || []).filter(
-    (g) => g.id !== meta.id
-  );
-  if (!siblings.length) return "";
-  const links = siblings
-    .map(
-      (g) =>
-        `<button class="sibling" data-gene="${escapeHtml(g.id)}">` +
-        `${escapeHtml(g.label)}</button>` +
-        (g.description ? ` — ${escapeHtml(g.description)}` : "")
-    )
-    .join("; ");
-  return `<p class="muted gene-siblings">Also measured as ${links}</p>`;
-}
-
-// delegated so it survives the header being rewritten on every selection
-geneHeader.addEventListener("click", (e) => {
-  const btn = e.target.closest(".sibling");
-  if (btn) selectGene(btn.dataset.gene);
-});
-
 async function selectGene(name, updateUrl = true) {
   hideSuggestions();
   // `name` may be an entry id, a display label, or a bare symbol
@@ -266,8 +233,7 @@ async function selectGene(name, updateUrl = true) {
   geneHeader.innerHTML =
     `<h2>${escapeHtml(meta.label)}</h2>` +
     `<p class="gene-desc">${escapeHtml(meta.description || "")}</p>` +
-    `<p class="muted">detected in ${meta.modalities.length} dataset(s)${uni}</p>` +
-    siblingsHtml(meta);
+    `<p class="muted">detected in ${meta.modalities.length} dataset(s)${uni}</p>`;
 
   const available = MODALITY_ORDER.filter((m) => meta.modalities.includes(m));
   if (!available.length) {

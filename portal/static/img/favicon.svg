@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Lab T cell mark, used as the browser tab icon. Same artwork as t_cell.svg,
-     with two favicon-specific changes:
+<!-- Lab T cell mark, used as the browser tab icon. Derived from the source
+     artwork t_cell.svg, which nothing referenced and which was removed from the
+     tree — recover it from git history if the mark ever needs regenerating.
+     Two favicon-specific changes were made to it:
 
      1. Squared viewBox. The source is 10.76 x 11.11, which a square favicon
         slot would stretch. Padding the viewport rather than transforming the
