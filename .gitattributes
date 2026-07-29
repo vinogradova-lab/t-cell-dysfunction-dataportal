@@ -1,0 +1,10 @@
+# Parquet is internally compressed, so git cannot delta successive versions —
+# every ETL run stores 10-25 MB of fresh whole blobs. Tracking the tables in LFS
+# keeps that churn out of the pack. Existing blobs stay in history; this only
+# stops the growth.
+#
+# CI must fetch them: .github/workflows/pages.yml sets `lfs: true` on checkout,
+# because actions/checkout does NOT pull LFS objects by default. Without it the
+# build sees pointer files and Store() fails (with the message it raises for
+# exactly this case).
+data/parquet/*.parquet filter=lfs diff=lfs merge=lfs -text

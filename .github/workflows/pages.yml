@@ -24,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # data/parquet/ is tracked in LFS (.gitattributes) and prerender reads
+          # it directly. checkout does not fetch LFS objects by default, so
+          # without this the build gets pointer files instead of tables.
+          lfs: true
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

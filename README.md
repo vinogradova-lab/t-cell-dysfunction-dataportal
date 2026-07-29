@@ -97,6 +97,11 @@ plotted points is right.
 
 ## Build & run
 
+`data/parquet/` is tracked with **Git LFS**, so install it before cloning
+(`brew install git-lfs && git lfs install`) — otherwise the checkout leaves
+pointer files where the tables should be and `Store()` refuses to start. In an
+existing clone, `git lfs install --local && git lfs pull` is enough.
+
 ```bash
 # 1. Stage inputs (once, and whenever upstream data changes)
 python scripts/sync_source.py                 # from ../t-cell-dysfunction-2026
