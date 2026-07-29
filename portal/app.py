@@ -7,8 +7,12 @@ Routes
 ------
 GET /                                   the single-page app
 GET /api/search?q=<query>               autocomplete over symbol/uniprot/alias
-GET /api/gene/<symbol>                  metadata + which modalities have data
-GET /api/gene/<symbol>/<modality>       Plotly figure JSON (204 if no data)
+GET /api/gene/<entry>                   metadata + which modalities have data
+GET /api/gene/<entry>/<modality>        Plotly figure JSON (204 if no data)
+
+``<entry>`` identifies one **protein**: a bare symbol ("MAP2K4") where the symbol
+was measured under a single UniProt accession, or "TMPO.P42166" where it was
+measured under several. See ``store.Store``.
 GET /api/volcano/datasets               available volcano datasets (proteome / rna)
 GET /api/volcano/<dataset>/comparisons  available comparisons for a dataset
 GET /api/volcano/<dataset>/<comparison> volcano figure JSON (?highlight=<symbol>)
@@ -41,26 +45,31 @@ def api_search():
     return jsonify(get_store().search(q))
 
 
-@app.route("/api/gene/<symbol>")
-def api_gene(symbol: str):
-    meta = get_store().gene_meta(symbol)
+@app.route("/api/gene/<entry_id>")
+def api_gene(entry_id: str):
+    meta = get_store().entry(entry_id)
     if meta is None:
-        abort(404, description=f"unknown gene/protein: {symbol}")
+        abort(404, description=f"unknown gene/protein: {entry_id}")
     return jsonify(meta)
 
 
-@app.route("/api/gene/<symbol>/<modality>")
-def api_gene_modality(symbol: str, modality: str):
+@app.route("/api/gene/<entry_id>/<modality>")
+def api_gene_modality(entry_id: str, modality: str):
     if modality not in MODALITIES:
         abort(404, description=f"unknown modality: {modality}")
     store = get_store()
-    if store.gene_meta(symbol) is None:
-        abort(404, description=f"unknown gene/protein: {symbol}")
-    df = store.slice(modality, symbol)
+    # An entry is one protein ("TMPO.P42166"), so the slice below never holds
+    # two. Store.entry also accepts a bare symbol or a display label.
+    entry = store.entry(entry_id)
+    if entry is None:
+        abort(404, description=f"unknown gene/protein: {entry_id}")
+    symbol, uniprot = entry["symbol"], entry["uniprot"]
+    df = store.slice(modality, symbol, uniprot)
     if df.is_empty():
         # no data for this gene in this modality — frontend hides the section
         return Response(status=204)
-    fig = BUILDERS[modality](df, symbol, store.replicates(modality, symbol))
+    reps = store.replicates(modality, symbol, uniprot)
+    fig = BUILDERS[modality](df, entry["label"], reps)
     return Response(fig.to_json(), mimetype="application/json")
 
 

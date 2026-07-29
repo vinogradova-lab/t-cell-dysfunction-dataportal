@@ -57,7 +57,7 @@ const volcanoPlot = document.getElementById("volcano-plot");
 const volcanoTitle = document.getElementById("volcano-title");
 const volcanoBlurb = document.getElementById("volcano-blurb");
 
-let currentGene = null;
+let currentEntry = null; // the resolved record for the open page
 let currentComparison = null;
 let currentDataset = null;
 
@@ -65,19 +65,53 @@ let activeIndex = -1;
 let currentSuggestions = [];
 
 // ---- search index (loaded once) -------------------------------------- //
-let GENES = []; // [{symbol, uniprot, description, aliases, modalities, key, _s, _u, _a}]
-let GENE_BY_SYMBOL = new Map(); // lowercased symbol -> record
+// One record per PROTEIN, not per gene symbol. Five symbols were measured under
+// more than one UniProt accession (TMPO, MOCS2, MIEF1, CDKN2A, POLR1D) and get
+// one record each, with id "TMPO.P42166" and label "TMPO (P42166)". prerender
+// omits id/label wherever they equal the symbol, so both default here.
+let GENES = [];
+let GENE_BY_KEY = new Map(); // lowercased id AND label -> record
+let GENE_BY_SYMBOL = new Map(); // lowercased symbol -> that symbol's primary record
+let GENE_SIBLINGS = new Map(); // lowercased symbol -> records, only where > 1
 
 async function loadGenes() {
   const res = await fetch("api/genes.json");
   const raw = await res.json();
   GENES = raw.map((g) => ({
     ...g,
+    id: g.id || g.symbol,
+    label: g.label || g.symbol,
     _s: g.symbol.toLowerCase(),
     _u: (g.uniprot || "").toLowerCase(),
     _a: (g.aliases || "").toLowerCase(),
   }));
-  GENE_BY_SYMBOL = new Map(GENES.map((g) => [g._s, g]));
+  GENE_BY_KEY = new Map();
+  GENE_BY_SYMBOL = new Map();
+  const bySymbol = new Map();
+  for (const g of GENES) {
+    GENE_BY_KEY.set(g.id.toLowerCase(), g);
+    GENE_BY_KEY.set(g.label.toLowerCase(), g);
+    // lowest accession wins, matching store.Store._primary — so a bare symbol
+    // resolves the same way on both sides
+    const prev = GENE_BY_SYMBOL.get(g._s);
+    if (!prev || (g.uniprot || "") < (prev.uniprot || "")) {
+      GENE_BY_SYMBOL.set(g._s, g);
+    }
+    if (!bySymbol.has(g._s)) bySymbol.set(g._s, []);
+    bySymbol.get(g._s).push(g);
+  }
+  GENE_SIBLINGS = new Map(
+    [...bySymbol].filter(([, list]) => list.length > 1)
+  );
+}
+
+// Resolve anything that names a protein: an entry id, a display label, or a
+// bare symbol (an old ?gene= link, or a click on the transcript-level RNA
+// volcano, whose points are symbols).
+function resolveGene(name) {
+  if (!name) return null;
+  const k = String(name).toLowerCase();
+  return GENE_BY_KEY.get(k) || GENE_BY_SYMBOL.get(k) || null;
 }
 
 // port of store.py Store.search: exact > prefix > uniprot-prefix > alias/substring
@@ -86,9 +120,11 @@ function searchGenes(query, limit = 15) {
   if (!q) return [];
   const seen = new Set();
   const out = [];
+  // dedup on entry id, not symbol: "TMPO" must offer both of its proteins,
+  // while "P42167" offers only that one
   const push = (g) => {
-    if (seen.has(g.symbol)) return;
-    seen.add(g.symbol);
+    if (seen.has(g.id)) return;
+    seen.add(g.id);
     out.push(g);
   };
   const exact = GENES.filter((g) => g._s === q);
@@ -126,7 +162,7 @@ searchInput.addEventListener("keydown", (e) => {
   } else if (e.key === "Enter") {
     e.preventDefault();
     const pick = currentSuggestions[activeIndex] || currentSuggestions[0];
-    if (pick) selectGene(pick.symbol);
+    if (pick) selectGene(pick.id);
   } else if (e.key === "Escape") {
     hideSuggestions();
   }
@@ -151,12 +187,12 @@ function renderSuggestions() {
     li.className = "suggestion" + (i === activeIndex ? " active" : "");
     const mods = s.modalities.length;
     li.innerHTML =
-      `<span class="s-symbol">${s.symbol}</span>` +
+      `<span class="s-symbol">${escapeHtml(s.label)}</span>` +
       `<span class="s-desc">${escapeHtml(s.description || "")}</span>` +
       `<span class="s-badges">${mods} dataset${mods === 1 ? "" : "s"}</span>`;
     li.addEventListener("mousedown", (e) => {
       e.preventDefault();
-      selectGene(s.symbol);
+      selectGene(s.id);
     });
     suggestionsEl.appendChild(li);
   });
@@ -171,28 +207,56 @@ function hideSuggestions() {
 }
 
 // ---- gene view ------------------------------------------------------- //
-async function selectGene(symbol, updateUrl = true) {
+// Where a symbol was measured under several accessions, each protein has its own
+// page — so each one points at the others. Without this the sibling is only
+// reachable by searching the symbol again, and for pairs that are really two
+// halves of one story (TMPO's LAP2 isoforms, POLR1D's) that is easy to miss.
+function siblingsHtml(meta) {
+  const siblings = (GENE_SIBLINGS.get(meta._s) || []).filter(
+    (g) => g.id !== meta.id
+  );
+  if (!siblings.length) return "";
+  const links = siblings
+    .map(
+      (g) =>
+        `<button class="sibling" data-gene="${escapeHtml(g.id)}">` +
+        `${escapeHtml(g.label)}</button>` +
+        (g.description ? ` — ${escapeHtml(g.description)}` : "")
+    )
+    .join("; ");
+  return `<p class="muted gene-siblings">Also measured as ${links}</p>`;
+}
+
+// delegated so it survives the header being rewritten on every selection
+geneHeader.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sibling");
+  if (btn) selectGene(btn.dataset.gene);
+});
+
+async function selectGene(name, updateUrl = true) {
   hideSuggestions();
-  searchInput.value = symbol;
-  if (symbol !== currentGene) {
-    currentGene = symbol;
+  // `name` may be an entry id, a display label, or a bare symbol
+  const meta = resolveGene(name);
+  const shown = meta ? meta.label : String(name);
+  searchInput.value = shown;
+  if (!meta || meta.id !== (currentEntry && currentEntry.id)) {
+    currentEntry = meta;
     refreshVolcanoHighlight();
   }
   if (updateUrl) {
     // shareable / journal-linkable deep link, e.g. ?gene=MAP2K4
     const url = new URL(window.location);
-    url.searchParams.set("gene", symbol);
+    url.searchParams.set("gene", meta ? meta.id : name);
     history.replaceState(null, "", url);
   }
   geneView.hidden = false;
-  geneHeader.innerHTML = `<h2>${escapeHtml(symbol)}</h2><p class="muted">Loading…</p>`;
+  geneHeader.innerHTML = `<h2>${escapeHtml(shown)}</h2><p class="muted">Loading…</p>`;
   chartsEl.innerHTML = "";
   geneView.scrollIntoView({ behavior: "smooth", block: "start" });
 
-  const meta = GENE_BY_SYMBOL.get(symbol.toLowerCase());
   if (!meta) {
     geneHeader.innerHTML =
-      `<h2>${escapeHtml(symbol)}</h2><p class="error">No data found for “${escapeHtml(symbol)}”.</p>`;
+      `<h2>${escapeHtml(shown)}</h2><p class="error">No data found for “${escapeHtml(shown)}”.</p>`;
     return;
   }
 
@@ -200,9 +264,10 @@ async function selectGene(symbol, updateUrl = true) {
     ? ` · UniProt <a href="https://www.uniprot.org/uniprotkb/${meta.uniprot}" target="_blank" rel="noopener">${meta.uniprot}</a>`
     : "";
   geneHeader.innerHTML =
-    `<h2>${escapeHtml(meta.symbol)}</h2>` +
+    `<h2>${escapeHtml(meta.label)}</h2>` +
     `<p class="gene-desc">${escapeHtml(meta.description || "")}</p>` +
-    `<p class="muted">detected in ${meta.modalities.length} dataset(s)${uni}</p>`;
+    `<p class="muted">detected in ${meta.modalities.length} dataset(s)${uni}</p>` +
+    siblingsHtml(meta);
 
   const available = MODALITY_ORDER.filter((m) => meta.modalities.includes(m));
   if (!available.length) {
@@ -262,7 +327,7 @@ async function selectGene(symbol, updateUrl = true) {
     card.className = "chart-card";
     const title = document.createElement("h3");
     title.className = "chart-title";
-    title.textContent = `${MODALITY_LABEL[m]} — ${symbol}`;
+    title.textContent = `${MODALITY_LABEL[m]} — ${meta.label}`;
     card.appendChild(title);
     const plot = document.createElement("div");
     plot.className = "plot";
@@ -274,7 +339,7 @@ async function selectGene(symbol, updateUrl = true) {
   for (const { plot, fig, m } of pending) {
     Plotly.newPlot(plot, fig.data, fig.layout, {
       ...PLOT_OPTS,
-      toImageButtonOptions: { format: "svg", filename: `${symbol}_${m}` },
+      toImageButtonOptions: { format: "svg", filename: `${meta.id}_${m}` },
     });
   }
 }
@@ -388,23 +453,32 @@ async function loadVolcano(dataset, comparison) {
       filename: `volcano_${dataset}_${comparison}`,
     },
   });
-  if (currentGene) pinVolcano(fig, currentGene);
-  // click a point -> open that gene's per-gene view
+  if (currentEntry) pinVolcano(fig, currentEntry);
+  // Click a point -> open that protein's page. customdata[0] is the entry label
+  // on the proteome volcano (one point per accession) and the bare symbol on the
+  // transcriptome one; selectGene resolves either.
   volcanoPlot.on("plotly_click", (ev) => {
     const pt = ev.points && ev.points[0];
-    const sym = pt && pt.customdata && pt.customdata[0];
-    if (sym) selectGene(sym);
+    const name = pt && pt.customdata && pt.customdata[0];
+    if (name) selectGene(name);
   });
 }
 
-// client-side port of the highlight block in figures.py volcano_figure:
-// find the gene in the cached point cloud, then draw a pinned marker + label.
-function pinVolcano(fig, symbol) {
+// Client-side port of the highlight block in figures.py volcano_figure: find the
+// protein in the cached point cloud, then draw a pinned marker + label.
+//
+// Matched on whichever key that dataset's points carry. The whole-proteome
+// volcano has one point per UniProt accession and labels them "TMPO (P42166)",
+// so an entry pins its own protein rather than whichever of the two came first.
+// The transcriptome volcano is transcript-level and labels by symbol, where both
+// of a symbol's entries legitimately share one point.
+function pinVolcano(fig, entry) {
+  const name = currentDataset === "rna" ? entry.symbol : entry.label;
   let hx, hy, hp;
   for (const tr of fig.data) {
     if (!tr.customdata || !tr.x) continue;
     for (let j = 0; j < tr.customdata.length; j++) {
-      if (tr.customdata[j] && tr.customdata[j][0] === symbol) {
+      if (tr.customdata[j] && tr.customdata[j][0] === name) {
         hx = tr.x[j];
         hy = tr.y[j];
         hp = tr.customdata[j][1];
@@ -413,12 +487,12 @@ function pinVolcano(fig, symbol) {
     }
     if (hx !== undefined) break;
   }
-  if (hx === undefined) return; // gene not in this comparison
+  if (hx === undefined) return; // protein not in this comparison
   // customdata[1] is whichever p the dataset called significance with
   const pLabel = currentDataset === "rna" ? "padj" : "p";
   Plotly.addTraces(volcanoPlot, {
     type: "scattergl",
-    name: symbol,
+    name,
     x: [hx],
     y: [hy],
     mode: "markers",
@@ -429,7 +503,7 @@ function pinVolcano(fig, symbol) {
       line: { width: 2.5, color: "#ffffff" },
     },
     hovertemplate:
-      `<b>${symbol}</b><br>log2FC = %{x:.2f}` +
+      `<b>${name}</b><br>log2FC = %{x:.2f}` +
       `<br>${pLabel} = ${fmtSig(hp)}<extra></extra>`,
     showlegend: false,
   });
@@ -441,7 +515,7 @@ function pinVolcano(fig, symbol) {
       {
         x: hx,
         y: hy,
-        text: symbol,
+        text: name,
         showarrow: false,
         yshift: 14,
         font: { size: 12, color: VOLCANO_HIGHLIGHT, family: FONT_FAMILY },
@@ -511,7 +585,9 @@ async function main() {
   }
   loadDownloads();
   initVolcano();
-  // deep link support: ?gene=MAP2K4 auto-selects on load
+  // Deep link support: ?gene=MAP2K4 auto-selects on load. selectGene resolves
+  // entry ids (?gene=TMPO.P42166), display labels and bare symbols alike, so
+  // links predating the per-protein split still land somewhere sensible.
   const initialGene = new URLSearchParams(window.location.search).get("gene");
   if (initialGene) selectGene(initialGene, false);
 }

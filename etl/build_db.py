@@ -95,6 +95,28 @@ def load_s2_2() -> pd.DataFrame:
     )
 
 
+@lru_cache(maxsize=None)
+def _protein_ids(filename: str) -> pd.DataFrame:
+    """``(uniprot, symbol, description)`` from a source CSV that carries them.
+
+    Feeds the search registry, which needs one row per *protein*. The three
+    uniprot-carrying assays do not agree on which accession they detected for a
+    given symbol — the cysteine assay only reports proteins with a quantified
+    cysteine peptide, so ~22% of its accessions are absent from the whole
+    proteome and ~26% the other way. Five symbols land on different accessions
+    per assay (MIEF1 detected as AltMIEF1 L0R8F8 in the proteome but as MiD51
+    Q9NQG6 in reactivity; CDKN2A as p16INK4a vs p14ARF), and each needs its own
+    registry row with its own protein name.
+
+    Reads only the three id columns — ``reactivity_atp.csv`` is 71 MB, and the
+    builders parse it in full already.
+    """
+    df = pd.read_csv(
+        SOURCE / filename, usecols=["uniprot", "protein", "description"]
+    )
+    return df.rename(columns={"protein": "symbol"}).drop_duplicates()
+
+
 @lru_cache(maxsize=1)
 def load_s1_1() -> pd.DataFrame:
     """Supplementary sheet S1-1 (bulk RNA-seq): DESeq2 results vs D2, one wide
@@ -1280,10 +1302,24 @@ def main() -> int:
         "rna_volcano": build_rna_volcano(),
     }
 
-    # search registry: seed from proteome (uniprot+symbol+description) plus any
-    # RNA-only symbols so gene-only hits are searchable too.
-    seed = load_s2_1()[["uniprot", "protein", "description"]].rename(
-        columns={"protein": "symbol"}
+    # Search registry: one row per *protein*, seeded from every assay that
+    # identifies proteins by accession, plus any RNA-only symbols so gene-only
+    # hits stay searchable.
+    #
+    # All three assays are needed, not just the proteome: reactivity contributes
+    # 1,281 accessions the proteome never saw and the ATP add-back another 115
+    # beyond that. Proteome first so its description wins wherever an accession
+    # appears in more than one assay; build_gene_registry dedups on
+    # (uniprot, symbol).
+    seed = pd.concat(
+        [
+            load_s2_1()[["uniprot", "protein", "description"]].rename(
+                columns={"protein": "symbol"}
+            ),
+            _protein_ids("reactivity_5cond.csv"),
+            _protein_ids("reactivity_atp.csv"),
+        ],
+        ignore_index=True,
     )
     rna_only = pd.DataFrame(
         {"symbol": sorted(set(tables["rna"]["symbol"]) - set(seed["symbol"]))}

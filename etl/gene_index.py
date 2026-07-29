@@ -76,13 +76,20 @@ def build_gene_registry(seed: pd.DataFrame) -> pd.DataFrame:
 
     ``seed`` must have columns ``uniprot``, ``symbol``, ``description`` — one row
     per protein/gene we have data for (dedup handled here).
+
+    Deduped on ``(uniprot, symbol)``, so a symbol that maps to several UniProt
+    entries keeps one row per protein. Deduping on ``symbol`` alone kept whichever
+    row pandas happened to see first and silently discarded the rest — that is
+    what let a single "TMPO" page pool P42166 and P42167, two proteins with
+    different fold changes, and put p16INK4a's abundance beside p14ARF's
+    cysteines under one "CDKN2A" heading.
     """
     by_symbol = _symbol_lookup(_load_geneid2nt())
     functions = _load_uniprot_functions()
 
     seed = (
         seed.dropna(subset=["symbol"])
-        .drop_duplicates(subset=["symbol"])
+        .drop_duplicates(subset=["uniprot", "symbol"])
         .reset_index(drop=True)
     )
 

@@ -183,22 +183,13 @@ def _abundance_bar(
     conditions = df["condition"].to_list()
     rows = df.to_dicts()
     # When replicates are available, draw each bar as the mean of its replicates
-    # (so the overlaid points center on the bar) and report the mean percent of
-    # control alongside it.
+    # so the overlaid points center on the bar.
     if _has_reps(reps_df):
         lfc_means = _replicate_means(reps_df, order)
-        pct_means = {
-            r["condition"]: r["m"]
-            for r in reps_df.group_by("condition")
-            .agg(pl.col("percent_control").mean().alias("m"))
-            .iter_rows(named=True)
-        }
         for row in rows:
             c = row["condition"]
             if c in lfc_means:
                 row["log2fc"] = lfc_means[c]
-            if c in pct_means:
-                row["percent_control"] = pct_means[c]
     values = [row["log2fc"] for row in rows]
     colors = [EXHAUSTION_COLS.get(c, "#888") for c in conditions]
     error_y = (
@@ -287,8 +278,7 @@ def proteome_figure(
     return _abundance_bar(
         df, FOUR_CONDITION_ORDER,
         yaxis="protein abundance, log₂(FC from D2)",
-        hover_extra="<br>%{customdata.percent_control:.1f}% of control"
-                    "<br>%{customdata.n_reps} donor(s)",
+        hover_extra="<br>%{customdata.n_reps} donor(s)",
         reps_df=reps_df,
         note=_evidence_note(df),
     )
@@ -597,6 +587,12 @@ def volcano_figure(
     show/hide toggle and significant points draw on top). ``highlight`` pins a
     single protein with a labelled marker — used to locate the searched gene.
 
+    Points are identified by ``label`` (``Store.volcano_slice`` supplies it): the
+    bare symbol, or ``"TMPO (P42166)"`` where a symbol was measured under several
+    accessions. The whole-proteome volcano has one point per *accession*, so
+    matching on symbol pinned an arbitrary one of a split symbol's two points and
+    click-through could not tell which protein was meant.
+
     The keyword arguments exist so the transcriptome volcano
     (:func:`rna_volcano_figure`) can reuse this body: it plots DESeq2's adjusted
     p against a 2-fold cutoff, where the whole proteome plots the manuscript's
@@ -606,6 +602,10 @@ def volcano_figure(
     """
     if df.is_empty():
         return _empty("No volcano data")
+
+    # tolerate a frame built without Store.volcano_slice (tests, ad-hoc calls)
+    if "label" not in df.columns:
+        df = df.with_columns(pl.col("symbol").alias("label"))
 
     fig = go.Figure()
     for reg in VOLCANO_REG_ORDER:
@@ -624,9 +624,10 @@ def volcano_figure(
                     line=dict(width=0),
                     opacity=0.75,
                 ),
-                # customdata[0] = symbol drives click-through to the gene page
+                # customdata[0] = entry label; drives click-through to the page
+                # for that exact protein, and is what the pin matches on
                 customdata=[[s, p] for s, p in zip(
-                    sub["symbol"].to_list(), sub[p_col].to_list()
+                    sub["label"].to_list(), sub[p_col].to_list()
                 )],
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>log2FC = %{x:.2f}"
@@ -646,9 +647,11 @@ def volcano_figure(
     )
     fig.add_vline(x=0, line_color="#666", line_width=1)
 
-    # pin the searched protein, if it's in this comparison
+    # Pin the searched protein, if it's in this comparison. Matched on label, so
+    # a split symbol pins the accession the reader actually opened rather than
+    # whichever row came first. Kept in step with app.js pinVolcano().
     if highlight:
-        pin = df.filter(pl.col("symbol") == highlight)
+        pin = df.filter(pl.col("label") == highlight)
         if not pin.is_empty():
             r = pin.row(0, named=True)
             hx, hy = r["log2fc"], r[y_col]

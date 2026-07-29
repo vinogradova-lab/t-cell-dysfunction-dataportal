@@ -64,51 +64,60 @@ def _fig_json(fig) -> dict:
 # search index + per-gene figure bundles
 # --------------------------------------------------------------------------- #
 def write_genes_index(store: Store, api_dir: Path) -> list[dict]:
-    genes = store.tables["genes"]
+    """Write the search index — one record per *protein* — and return the entries.
+
+    ``id``/``label`` are emitted only where they differ from ``symbol`` (10
+    entries of 17,553); the client defaults both to the symbol. Writing them on
+    every record would add ~500 KB to a file that already costs 563 KB gzipped
+    before search works.
+    """
     records = []
-    for r in genes.select(
-        ["symbol", "uniprot", "description", "aliases"]
-    ).iter_rows(named=True):
-        records.append(
-            {
-                "symbol": r["symbol"],
-                "uniprot": r["uniprot"],
-                "description": r["description"],
-                "aliases": r["aliases"],
-                "modalities": store.modalities_for(r["symbol"]),
-                "key": _safe_key(r["symbol"]),
-            }
-        )
+    for e in store.entries():
+        rec = {
+            "symbol": e["symbol"],
+            "uniprot": e["uniprot"],
+            "description": e["description"],
+            "aliases": e["aliases"],
+            "modalities": e["modalities"],
+            "key": _safe_key(e["id"]),
+        }
+        if e["id"] != e["symbol"]:
+            rec["id"] = e["id"]
+            rec["label"] = e["label"]
+        records.append(rec)
     (api_dir / "genes.json").write_text(json.dumps(records, separators=(",", ":")))
-    return records
+    return store.entries()
 
 
 def write_gene_bundles(
-    store: Store, records: list[dict], api_dir: Path, limit: int | None
+    store: Store, entries: list[dict], api_dir: Path, limit: int | None
 ) -> int:
     gene_dir = api_dir / "gene"
     gene_dir.mkdir(parents=True, exist_ok=True)
     written = 0
-    todo = [r for r in records if r["modalities"]]
+    todo = [e for e in entries if e["modalities"]]
     if limit is not None:
         todo = todo[:limit]
     total = len(todo)
-    for i, r in enumerate(todo, 1):
-        symbol = r["symbol"]
+    for i, e in enumerate(todo, 1):
+        # One bundle per protein. Slicing on (symbol, uniprot) is what keeps a
+        # figure from ever seeing two proteins at once — the accession-keyed
+        # modalities narrow to this entry, and RNA (transcript-level, no
+        # accession) is shared by every entry of the symbol.
+        symbol, uniprot, label = e["symbol"], e["uniprot"], e["label"]
         bundle: dict[str, dict | str | None] = {}
         for m in MODALITIES:
-            df = store.slice(m, symbol)
+            df = store.slice(m, symbol, uniprot)
             if df.is_empty():
                 bundle[m] = None
             else:
-                fig = BUILDERS[m](df, symbol, store.replicates(m, symbol))
-                bundle[m] = _fig_json(fig)
+                reps = store.replicates(m, symbol, uniprot)
+                bundle[m] = _fig_json(BUILDERS[m](df, label, reps))
         # per-gene metadata carried alongside the figures (not a modality, so the
         # frontend's modality loop ignores it); kept out of the always-loaded
         # genes.json index because the function text is large.
-        meta = store.gene_meta(symbol)
-        bundle["uniprot_function"] = (meta or {}).get("uniprot_function", "")
-        (gene_dir / f"{r['key']}.json").write_text(
+        bundle["uniprot_function"] = e["uniprot_function"]
+        (gene_dir / f"{_safe_key(e['id'])}.json").write_text(
             json.dumps(bundle, separators=(",", ":"))
         )
         written += 1
@@ -173,9 +182,18 @@ def _proteome_download_from_parquet(store: Store) -> pd.DataFrame:
     flags = [f for f in build_db.VOLCANO_FLAGS if f in v.columns]
     vol_cols: list[str] = []
     out = wide
-    # description from the gene registry (S2-1-seeded, covers every protein)
-    genes = store.tables["genes"].to_pandas()[["symbol", "description"]]
-    out = out.merge(genes, on="symbol", how="left")
+    # Description from the gene registry, joined on **uniprot**: the registry
+    # holds one row per protein, so a symbol measured under several accessions
+    # (TMPO, MOCS2, ...) has several rows and joining on symbol would fan this
+    # table out, duplicating those proteins' rows in the published CSV. uniprot
+    # is unique in the registry, so this stays 1:1 — and each accession now gets
+    # its own protein name rather than whichever one the symbol resolved to.
+    genes = (
+        store.tables["genes"]
+        .to_pandas()[["uniprot", "description"]]
+        .dropna(subset=["uniprot"])
+    )
+    out = out.merge(genes, on="uniprot", how="left")
     for cmp in build_db.VOLCANO_COMPARISONS:
         sub = v[v["comparison"] == cmp][["uniprot"] + stat_cols].rename(
             columns={c: f"{cmp}_{c}" for c in stat_cols}

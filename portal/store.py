@@ -4,6 +4,9 @@ At import time we load the parquet tables produced by ``etl/build_db.py`` into
 polars DataFrames and build a small search index. Everything is read-only, so a
 single process-wide store is shared across requests (gunicorn workers each hold
 their own copy — the tables are small).
+
+The unit of a search result, a URL and a page is one **protein**, not one gene
+symbol — see :class:`Store`.
 """
 
 from __future__ import annotations
@@ -58,8 +61,36 @@ VOLCANO_DATASETS = [
 _VOLCANO_TABLE = {ds: table for ds, table, _ in VOLCANO_DATASETS}
 DEFAULT_VOLCANO_DATASET = VOLCANO_DATASETS[0][0]
 
+# The id is also the bundle filename and the ``?gene=`` value, so it sticks to
+# characters ``prerender._safe_key`` passes through unescaped.
+_ID_SEP = "."
+
+
+def _split_id(symbol: str, uniprot: str) -> str:
+    return f"{symbol}{_ID_SEP}{uniprot}"
+
+
+def _split_label(symbol: str, uniprot: str) -> str:
+    return f"{symbol} ({uniprot})"
+
 
 class Store:
+    """Parquet tables plus a protein-level entry index.
+
+    A gene symbol is not a unique protein id: the tables are keyed on UniProt
+    accession, and five symbols were measured under more than one (TMPO, MOCS2,
+    MIEF1, CDKN2A, POLR1D). Keyed on symbol their pages pooled two proteins —
+    TMPO's D8C bar drew mean(0.772, 0.332) = 0.531, belonging to neither. So one
+    **entry** = one registry row = one protein:
+
+        1 accession   ->  id = "ACTB"          label = "ACTB"
+        several       ->  id = "TMPO.P42166"   label = "TMPO (P42166)"
+
+    17,543 of 17,553 entries take the first branch, unchanged from the old
+    symbol-keyed behaviour. The rule lives here alone; prerender, figures and
+    app.js all consume what this computes.
+    """
+
     def __init__(self, parquet_dir: Path = PARQUET_DIR):
         self.tables: dict[str, pl.DataFrame] = {}
         for name, fname in _TABLE_FILES.items():
@@ -69,29 +100,90 @@ class Store:
                     f"missing parquet table {path}. Run the ETL first "
                     "(scripts/sync_source.py then etl/build_db.py)."
                 )
+            # parquet is LFS-tracked; a clone without LFS leaves pointer files
+            # here, and polars' parse error for one is opaque
+            with path.open("rb") as fh:
+                if fh.read(4) != b"PAR1":
+                    raise RuntimeError(
+                        f"{path} is a Git LFS pointer, not a parquet table. "
+                        "Run `git lfs install && git lfs pull`."
+                    )
             self.tables[name] = pl.read_parquet(path)
 
-        # search index: one row per gene with a lowercased haystack of
-        # symbol + uniprot + aliases for fast prefix/substring matching.
         genes = self.tables["genes"]
+        # symbols holding several accessions — the ones that get qualified ids.
+        # Derived, not hardcoded, so a source revision needs no code change.
+        multi = (
+            genes.filter(pl.col("uniprot").is_not_null())
+            .group_by("symbol")
+            .agg(pl.col("uniprot").n_unique().alias("n"))
+            .filter(pl.col("n") > 1)["symbol"]
+        )
+        self._multi_symbols = set(multi.to_list())
+
+        # Which modalities key on accession. RNA does not — it is
+        # transcript-level, so both TMPO entries share one measurement.
+        self._by_uniprot = {
+            m: "uniprot" in self.tables[m].columns for m in MODALITIES
+        }
+        # membership keys, per that distinction
+        self._keys_in: dict[str, set] = {}
+        for m in MODALITIES:
+            t = self.tables[m]
+            self._keys_in[m] = (
+                set(zip(t["symbol"].to_list(), t["uniprot"].to_list()))
+                if self._by_uniprot[m]
+                else set(t["symbol"].to_list())
+            )
+
+        # one entry per registry row, in registry order
+        meta_cols = ["symbol", "uniprot", "description", "aliases"]
+        if "uniprot_function" in genes.columns:
+            meta_cols.append("uniprot_function")
+        self._entries: list[dict] = []
+        for r in genes.select(meta_cols).iter_rows(named=True):
+            symbol, uniprot = r["symbol"], r["uniprot"]
+            split = uniprot is not None and symbol in self._multi_symbols
+            self._entries.append(
+                {
+                    "id": _split_id(symbol, uniprot) if split else symbol,
+                    "label": _split_label(symbol, uniprot) if split else symbol,
+                    "symbol": symbol,
+                    "uniprot": uniprot,
+                    "description": r["description"] or "",
+                    "aliases": r["aliases"] or "",
+                    "uniprot_function": r.get("uniprot_function") or "",
+                    "modalities": self.modalities_for(symbol, uniprot),
+                }
+            )
+        self._by_entry = {e["id"]: e for e in self._entries}
+        # A bare symbol (an old link, an RNA volcano click) resolves to the
+        # lowest accession — deterministic, and matched by app.js.
+        self._primary: dict[str, str] = {}
+        for e in sorted(self._entries, key=lambda e: (e["symbol"], e["uniprot"] or "")):
+            self._primary.setdefault(e["symbol"], e["id"])
+
+        # accession -> volcano point label, split symbols only; everything else
+        # keeps its bare symbol, so the volcano JSON does not grow
+        self._label_by_uniprot = {
+            e["uniprot"]: e["label"]
+            for e in self._entries
+            if e["uniprot"] is not None and e["symbol"] in self._multi_symbols
+        }
+
+        # search index: one row per entry with a lowercased haystack of
+        # symbol + uniprot + aliases for fast prefix/substring matching.
         self._genes = genes.with_columns(
             pl.col("symbol").str.to_lowercase().alias("_symbol_lc"),
             pl.col("uniprot").fill_null("").str.to_lowercase().alias("_uniprot_lc"),
             pl.col("aliases").fill_null("").str.to_lowercase().alias("_aliases_lc"),
+            pl.Series("_id", [e["id"] for e in self._entries]),
         )
-        # symbol -> uniprot / description / function, for gene-page metadata.
-        # uniprot_function is optional (older parquet may predate the column).
-        meta_cols = ["symbol", "uniprot", "description"]
-        if "uniprot_function" in genes.columns:
-            meta_cols.append("uniprot_function")
-        self._by_symbol = {
-            r["symbol"]: r
-            for r in genes.select(meta_cols).iter_rows(named=True)
-        }
-        # sets of symbols present in each modality, for "has data" flags
-        self._symbols_in = {
-            m: set(self.tables[m]["symbol"].unique().to_list()) for m in MODALITIES
-        }
+        # symbol -> rows, per table, built on first use. Filtering by symbol is a
+        # full scan; the prerender does ~140k of them, so one partition pass per
+        # table turns the whole thing into dict lookups. Lazy so the web app
+        # doesn't pay for tables it never slices.
+        self._partitions: dict[str, dict[str, pl.DataFrame]] = {}
 
     # ---- search -------------------------------------------------------- #
     def search(self, query: str, limit: int = 15) -> list[dict]:
@@ -109,53 +201,91 @@ class Store:
             pl.col("_aliases_lc").str.contains(q, literal=True)
             | (pl.col("_symbol_lc").str.contains(q, literal=True))
         )
+        # dedup on entry id: "TMPO" returns both its proteins, "P42167" one
         seen: set[str] = set()
         out: list[dict] = []
         for frame in (exact, prefix, uni, alias):
-            for r in frame.select(
-                ["symbol", "uniprot", "description"]
-            ).iter_rows(named=True):
-                if r["symbol"] in seen:
+            for eid in frame["_id"].to_list():
+                if eid in seen:
                     continue
-                seen.add(r["symbol"])
-                out.append(
-                    {
-                        "symbol": r["symbol"],
-                        "uniprot": r["uniprot"],
-                        "description": r["description"],
-                        "modalities": self.modalities_for(r["symbol"]),
-                    }
-                )
+                seen.add(eid)
+                out.append(self._by_entry[eid])
                 if len(out) >= limit:
                     return out
         return out
 
-    # ---- gene metadata ------------------------------------------------- #
-    def gene_meta(self, symbol: str) -> dict | None:
-        r = self._by_symbol.get(symbol)
-        if r is None:
-            return None
-        return {
-            "symbol": r["symbol"],
-            "uniprot": r["uniprot"],
-            "description": r["description"],
-            "uniprot_function": r.get("uniprot_function") or "",
-            "modalities": self.modalities_for(symbol),
-        }
+    # ---- entries (one per protein) ------------------------------------- #
+    def entries(self) -> list[dict]:
+        """Every entry, in registry order — the portal's full gene universe."""
+        return self._entries
 
-    def modalities_for(self, symbol: str) -> list[str]:
-        return [m for m in MODALITIES if symbol in self._symbols_in[m]]
+    def entry(self, entry_id: str) -> dict | None:
+        """One entry by id, bare symbol, or display label.
+
+        All three, so old ``?gene=TMPO`` links keep working and a volcano click
+        can pass ``customdata[0]`` straight through.
+        """
+        hit = self._by_entry.get(entry_id)
+        if hit is not None:
+            return hit
+        primary = self._primary.get(entry_id)
+        if primary is not None:
+            return self._by_entry[primary]
+        # display label, e.g. "TMPO (P42166)"
+        if entry_id.endswith(")") and " (" in entry_id:
+            symbol, _, rest = entry_id.partition(" (")
+            return self._by_entry.get(_split_id(symbol, rest[:-1]))
+        return None
+
+    def modalities_for(self, symbol: str, uniprot: str | None = None) -> list[str]:
+        """Modalities holding data for this protein.
+
+        Matching accession-keyed tables on ``(symbol, uniprot)`` is what gives
+        ``MIEF1 (Q9NQG6)`` a reactivity card and no proteome card.
+        """
+        def has(m: str) -> bool:
+            if self._by_uniprot[m]:
+                return (symbol, uniprot) in self._keys_in[m]
+            return symbol in self._keys_in[m]
+
+        return [m for m in MODALITIES if has(m)]
 
     # ---- per-gene data slices ------------------------------------------ #
-    def slice(self, modality: str, symbol: str) -> pl.DataFrame:
-        return self.tables[modality].filter(pl.col("symbol") == symbol)
+    def _by_symbol_index(self, table: str) -> dict[str, pl.DataFrame]:
+        index = self._partitions.get(table)
+        if index is None:
+            # as_dict keys are one-element tuples (the partition key)
+            index = {
+                key[0]: frame
+                for key, frame in self.tables[table]
+                .partition_by("symbol", as_dict=True)
+                .items()
+            }
+            self._partitions[table] = index
+        return index
 
-    def replicates(self, modality: str, symbol: str) -> pl.DataFrame:
+    def _slice(self, table: str, symbol: str, uniprot: str | None) -> pl.DataFrame:
+        # Symbol lookup first (the fast path), then narrow the handful of rows
+        # to one protein. .clear() keeps the schema on a miss, so callers can
+        # select columns off it the same way they would off a hit.
+        frame = self._by_symbol_index(table).get(symbol, self.tables[table].clear())
+        if uniprot is not None and "uniprot" in frame.columns:
+            frame = frame.filter(pl.col("uniprot") == uniprot)
+        return frame
+
+    def slice(
+        self, modality: str, symbol: str, uniprot: str | None = None
+    ) -> pl.DataFrame:
+        return self._slice(modality, symbol, uniprot)
+
+    def replicates(
+        self, modality: str, symbol: str, uniprot: str | None = None
+    ) -> pl.DataFrame:
         """Per-replicate rows for a gene, or an empty frame when unavailable."""
-        table = self.tables.get(f"{modality}_replicates")
-        if table is None:
+        name = f"{modality}_replicates"
+        if name not in self.tables:
             return pl.DataFrame()
-        return table.filter(pl.col("symbol") == symbol)
+        return self._slice(name, symbol, uniprot)
 
     # ---- volcano (dataset-wide) ---------------------------------------- #
     def volcano_datasets(self) -> list[dict]:
@@ -183,11 +313,28 @@ class Store:
     def volcano_slice(
         self, comparison: str, dataset: str = DEFAULT_VOLCANO_DATASET
     ) -> pl.DataFrame:
-        """All points for one (dataset, comparison) — empty frame if unknown."""
+        """All points for one (dataset, comparison) — empty frame if unknown.
+
+        Carries a ``label`` column — entry label for a split symbol, bare symbol
+        otherwise — which the hover shows, click-through resolves, and the pin
+        matches. The proteome volcano has one point per *accession*, so matching
+        on symbol pinned an arbitrary one of a symbol's two. Derived here so
+        figures.py and app.js share one rule.
+        """
         table = _VOLCANO_TABLE.get(dataset)
         if table is None or table not in self.tables:
             return pl.DataFrame()
-        return self.tables[table].filter(pl.col("comparison") == comparison)
+        df = self.tables[table].filter(pl.col("comparison") == comparison)
+        if "uniprot" in df.columns and self._label_by_uniprot:
+            label = (
+                pl.col("uniprot")
+                .replace_strict(self._label_by_uniprot, default=None)
+                .fill_null(pl.col("symbol"))
+            )
+        else:
+            # the transcriptome volcano is symbol-keyed; nothing to qualify
+            label = pl.col("symbol")
+        return df.with_columns(label.alias("label"))
 
 
 @lru_cache(maxsize=1)
