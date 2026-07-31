@@ -143,9 +143,13 @@ def test_aggregate_and_replicates_agree_on_which_replicates_count(stub):
         assert r["n_reps"] == donors.get((r["uniprot"], r["condition"]), 0)
         assert np.isfinite(r["log2fc"])
 
-    # the flag drives the censoring internally but is not a published column
+    # the flag rides along with the per-channel values it describes, so the
+    # per-gene view can mark those points as bounds. The aggregate has no use
+    # for it — its bar is the published log2FC, not a summary of these points.
     assert "censored" not in agg.columns
-    assert "censored" not in reps.columns
+    assert reps["censored"].tolist() == [
+        v == 0.0 for v in (0.20, 0.20, 0.10, 0.10, 0.0, 0.0)
+    ]
 
 
 def test_overlay_splits_each_donor_into_two_channels(stub):

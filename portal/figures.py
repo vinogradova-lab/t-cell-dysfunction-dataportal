@@ -84,19 +84,24 @@ def _has_reps(reps_df: pl.DataFrame | None) -> bool:
     return reps_df is not None and not reps_df.is_empty()
 
 
-def _replicate_means(reps_df: pl.DataFrame, order: list[str]) -> dict[str, float]:
-    """condition -> mean replicate log2FC, so bars center on the overlaid points."""
-    agg = reps_df.group_by("condition").agg(pl.col("log2fc").mean().alias("m"))
-    return {r["condition"]: r["m"] for r in agg.iter_rows(named=True) if r["condition"] in order}
-
-
 def _replicate_sem(reps_df: pl.DataFrame, order: list[str]) -> dict[str, float]:
     """condition -> standard error of the mean replicate log2FC (sd/sqrt(n)).
 
     Mirrors the manuscript's ``geom_errorbar`` in whole_proteome_visualization.Rmd
     and rna_visualization.Rmd, which pool every replicate column for a condition
-    (6 donors x 2 technical channels for the proteome) and take sd/sqrt(n) — so
-    the bar describes the same points the overlay draws.
+    (6 donors x 2 technical channels for the proteome) and take sd/sqrt(n).
+
+    Read it as the spread of the overlaid points, **not** as the uncertainty of
+    the bar: the bar is the published log2FC, and no published standard error
+    exists for it (the S2-1 volcano block carries only p-values, and
+    back-calculating an SE from one would require assuming a test and its df).
+    Pooling channels also treats a donor's two technical measurements as
+    independent, so the interval is narrower than a donor-level SEM by at least
+    √2 — it measures channel reproducibility, not donor variability. It is
+    retained because it reproduces the manuscript's own figure and because the
+    points are per-donor ratios (each donor's D2 scaled to 100 in
+    ``build_db._s2_1_replicate_pct``), so the reference sits inside every point
+    rather than being treated as error-free.
 
     Computed on log2FC rather than the manuscript's percent-of-control because
     that is the axis here; an error bar has to match the scale it is drawn on.
@@ -182,14 +187,9 @@ def _abundance_bar(
     df = _order(df, order)
     conditions = df["condition"].to_list()
     rows = df.to_dicts()
-    # When replicates are available, draw each bar as the mean of its replicates
-    # so the overlaid points center on the bar.
-    if _has_reps(reps_df):
-        lfc_means = _replicate_means(reps_df, order)
-        for row in rows:
-            c = row["condition"]
-            if c in lfc_means:
-                row["log2fc"] = lfc_means[c]
+    # The bar is whatever ``log2fc`` the caller put on the row — a published
+    # estimate, not a summary of the overlaid points. A null stays null so the
+    # bar is a gap rather than a zero.
     values = [row["log2fc"] for row in rows]
     colors = [EXHAUSTION_COLS.get(c, "#888") for c in conditions]
     error_y = (
@@ -237,24 +237,47 @@ def _abundance_bar(
     return fig
 
 
-def _evidence_note(df: pl.DataFrame) -> str | None:
+def _evidence_note(
+    df: pl.DataFrame, reps_df: pl.DataFrame | None = None
+) -> str | None:
     """Caveat for whole-proteome bars resting on thin evidence.
 
     Silent for the ordinary case. Names the volcano omission when a D2
     reference was missing, so the per-gene view and the dataset-wide view don't
     appear to disagree for no reason.
 
-    Deliberately says nothing about ordinary below-detection censoring: that
-    fires on enough proteins to read as noise, and the ``censored`` flag is
-    still carried in the parquet and the bulk download for anyone who needs it.
+    Also names the conditions where a donor fell below detection, because those
+    replicate points are floored bounds rather than measurements — they cannot
+    fall below the limit of detection while the published bar can, which is the
+    whole reason the dots sit off the bar on F13A1, HBB and TNFRSF4. Keyed off
+    the per-channel ``censored`` flag rather than a low ``n_reps`` threshold,
+    which covers the cases badly: ``< 3`` fires on 6.2% of cells and still
+    misses TNFRSF4.
     """
     parts: list[str] = []
+    no_ref: list[str] = []
     if "d2_below_detection" in df.columns:
-        conds = df.filter(pl.col("d2_below_detection"))["condition"].to_list()
+        no_ref = df.filter(pl.col("d2_below_detection"))["condition"].to_list()
+        if no_ref:
+            parts.append(
+                f"D2 reference below detection in {', '.join(no_ref)} — "
+                "fold change is a lower bound; omitted from the volcano"
+            )
+    if _has_reps(reps_df) and "censored" in reps_df.columns:
+        # conditions the clause above already covers are skipped: a missing D2
+        # is why those channels were censored, so naming them twice adds words
+        # and no information.
+        conds = [
+            c
+            for c in reps_df.filter(pl.col("censored"))["condition"]
+            .unique(maintain_order=True)
+            .to_list()
+            if c not in no_ref
+        ]
         if conds:
             parts.append(
-                f"D2 reference below detection in {', '.join(conds)} — "
-                "fold change is a lower bound; omitted from the volcano"
+                f"donor below detection in {', '.join(conds)} — those replicate "
+                "points are bounds, not measurements"
             )
     if "n_reps" in df.columns:
         thin = df.filter(pl.col("n_reps") < 2)["condition"].to_list()
@@ -275,12 +298,23 @@ def proteome_figure(
     df = df.filter(pl.col("condition") != "D2")
     if reps_df is not None:
         reps_df = reps_df.filter(pl.col("condition") != "D2")
+    # Bar = the S2-1 volcano block's own log2FC, which is exactly what the
+    # proteome volcano plots on its x axis and what whole_proteome.csv reports —
+    # so a protein's bar and its volcano point are the same number by
+    # construction. (Deliberately NOT the mean of the replicates drawn over it:
+    # that mean tracked the published value closely but not exactly, and parted
+    # from it by up to 1.3 log2 wherever a donor was censored at the limit of
+    # detection.) Selected into `log2fc` here rather than inside _abundance_bar,
+    # which stays generic; a slice from a parquet without the column falls back
+    # to the aggregate it used to draw.
+    if "published_log2fc" in df.columns:
+        df = df.with_columns(pl.col("published_log2fc").alias("log2fc"))
     return _abundance_bar(
         df, FOUR_CONDITION_ORDER,
         yaxis="protein abundance, log₂(FC from D2)",
         hover_extra="<br>%{customdata.n_reps} donor(s)",
         reps_df=reps_df,
-        note=_evidence_note(df),
+        note=_evidence_note(df, reps_df),
     )
 
 
@@ -297,11 +331,12 @@ def rna_figure(
 
     # Error bar = DESeq2's lfcSE, the GLM's own standard error for the log2FC the
     # bar draws — so bar and interval describe one published quantity.
-    # Deliberately NOT the SEM of the replicate points below (which is what the
-    # proteome bars use, correctly, since their bar *is* the replicate mean):
-    # that SEM takes the spread of the three treatment samples about their own
-    # mean and treats the D2 reference as error-free, dropping the reference
-    # group's contribution entirely. It runs ~1.9x under lfcSE as a result.
+    # Deliberately NOT the SEM of the replicate points below: that SEM takes the
+    # spread of the three treatment samples about their own mean and treats the
+    # D2 reference as error-free, dropping the reference group's contribution
+    # entirely. It runs ~1.9x under lfcSE as a result. The proteome bars do draw
+    # a replicate SEM, but there the points are already per-donor ratios with
+    # the reference inside them, and no published SE exists to use instead.
     lfc_se = (
         df["lfc_se"].to_list() if "lfc_se" in df.columns else [None] * len(deseq)
     )
@@ -309,8 +344,8 @@ def rna_figure(
     # Bar = the DESeq2 model estimate, which is exactly what the transcriptome
     # volcano plots on its x axis and what rna.csv reports — so a gene's bar and
     # its volcano point are the same number by construction, and cannot drift.
-    # (Deliberately NOT the mean of the replicates drawn over it: the proteome
-    # bars do that, but here the model estimate is the published quantity.) The
+    # (Deliberately NOT the mean of the replicates drawn over it; the proteome
+    # bars follow the same rule, drawing their own published log2FC.) The
     # replicates are normalized onto the same log2 scale in build_rna_replicates,
     # so they still centre on the bar for any reasonably expressed gene.
     has_reps = _has_reps(reps_df)

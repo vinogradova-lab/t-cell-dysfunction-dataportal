@@ -343,15 +343,22 @@ def build_proteome_replicates() -> pd.DataFrame:
 
     Channels, not biological-replicate means: each donor contributes both of its
     technical measurements, so the overlay shows the measurement spread the
-    donor mean would hide. The bar itself is drawn as the mean of these points
-    (``figures._replicate_means``), so bar and dots stay consistent.
+    donor mean would hide. These points are supporting evidence layered over the
+    bar, not what sets it — the bar draws ``proteome.published_log2fc`` (see
+    :func:`build_proteome`), so the points can legitimately sit off-centre.
 
     ``bio_rep`` is retained so donor-level consumers — notably the bulk-download
     reconstruction in ``etl/prerender.py`` — can recover per-donor values by
     averaging a channel pair.
 
-    The per-channel ``censored`` flag is used internally but not published: it
-    fires on too few cells to be worth a column in every consumer.
+    ``censored`` marks a channel whose value is a *bound* rather than a
+    measurement, because one side of its ratio was below detection and was
+    substituted at the limit of detection (see :func:`_s2_1_replicate_pct`). It
+    fires on 15 channels across 9 (protein x condition) cells, which is few
+    enough that it was previously withheld — but the upper-bound half of them
+    (F13A1, HBB, TNFRSF4, where both of a donor's channels are floored to the
+    same constant) is exactly where the overlaid points sit visibly off the
+    published bar, so the per-gene view now publishes the flag to explain them.
     """
     out = _s2_1_channel_pct().copy()  # cached frame; don't mutate in place
     out["log2fc"] = _pct_to_log2fc(out["percent_control"])
@@ -362,7 +369,7 @@ def build_proteome_replicates() -> pd.DataFrame:
     out = out.sort_values(["symbol", "condition", "rep"])
     return out[
         ["uniprot", "symbol", "condition", "rep", "bio_rep", "percent_control",
-         "log2fc"]
+         "log2fc", "censored"]
     ]
 
 
@@ -423,20 +430,71 @@ def _d2_below_detection() -> pd.DataFrame:
     )
 
 
-def build_proteome() -> pd.DataFrame:
-    """Aggregated whole-proteome table: mean percent-of-control across replicates,
-    per (protein x condition). Derived from the same replicate values the portal
-    overlays, so bars (mean of replicates) and the aggregate agree by construction.
+def _published_log2fc(volcano: pd.DataFrame | None = None) -> pd.DataFrame:
+    """The S2-1 volcano block's own ``log2_FC``, keyed ``(uniprot, condition)``
+    for the four vs-D2 comparisons.
 
-    Deliberately aggregated over *biological* replicates, unlike the
-    channel-level overlay in :func:`build_proteome_replicates` — ``n_reps``
-    counts donors, which is the meaningful confidence signal.
+    Taken from :func:`build_volcano` rather than re-read from the sheet, so the
+    per-gene bar and the volcano's x axis are one column and cannot drift —
+    including through the below-detection exclusion that function applies. The
+    single cell it drops (AFAP1L2 D8C) is left null here and renders as a gap
+    rather than a zero bar.
+
+    ``volcano`` lets :func:`main` hand over the table it is building anyway,
+    rather than paying for a second identical build.
+
+    The ``D8C_vs_D8A`` comparison is excluded: it is not a vs-D2 fold change, so
+    it has no bar to land on.
+    """
+    if volcano is None and not any(
+        str(c).startswith("log2_FC_") for c in load_s2_1().columns
+    ):
+        # A sheet with no volcano block — the censoring tests' synthetic frame.
+        # Every bar then falls back to the aggregate. This does not hide a
+        # missing block on the real ETL path: main() builds the volcano table
+        # itself, and :func:`build_volcano` raises there if it finds nothing.
+        return pd.DataFrame(columns=["uniprot", "condition", "published_log2fc"])
+    vol = build_volcano() if volcano is None else volcano
+    vs_d2 = vol[vol["comparison"].astype(str).isin(FOUR_COMPARISONS)]
+    out = vs_d2[["uniprot", "comparison", "log2fc"]].rename(
+        columns={"comparison": "condition", "log2fc": "published_log2fc"}
+    )
+    out["condition"] = out["condition"].astype(str)
+    return out.reset_index(drop=True)
+
+
+def build_proteome(volcano: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Aggregated whole-proteome table, per (protein x condition).
+
+    Two fold changes sit side by side here and are **not** interchangeable:
+
+    ``published_log2fc``
+        the S2-1 volcano block's own ``log2_FC`` (:func:`_published_log2fc`).
+        This is what the portal's abundance bar draws and what its volcano plots
+        on the x axis, so a protein's bar height and its volcano point are one
+        number by construction — the same arrangement ``rna`` has with DESeq2's
+        estimate. Null only for AFAP1L2 D8C. Prefer this column.
+
+    ``log2fc``
+        log2 of ``percent_control``, i.e. of the *arithmetic* mean of the donor
+        ratios. Kept because it is the log form of the column beside it, but it
+        is not what the portal plots and should not be read as an estimate of
+        the published value: averaging ratios outside the log makes it biased
+        upward by Jensen's inequality, on every one of the 25,260 cells, and the
+        bias grows with effect size (+0.03 log2 typical, +0.33 for the largest
+        fold changes).
+
+    Aggregation is over *biological* replicates, unlike the channel-level
+    overlay in :func:`build_proteome_replicates` — ``n_reps`` counts donors,
+    which is the meaningful confidence signal.
 
     ``d2_below_detection`` marks the conditions where the D2 reference itself
     was missing, which makes the fold change a lower bound and removes the
     comparison from the volcano. Together with ``n_reps`` these are the
     thin-evidence signals worth surfacing: one protein, AFAP1L2, rests on a
     single usable donor.
+
+    ``volcano`` is passed straight to :func:`_published_log2fc`; see there.
     """
     reps = _s2_1_replicate_pct()
     agg = reps.groupby(["uniprot", "symbol", "condition"], as_index=False).agg(
@@ -444,6 +502,9 @@ def build_proteome() -> pd.DataFrame:
         n_reps=("percent_control", "size"),
     )
     agg["log2fc"] = _pct_to_log2fc(agg["percent_control"])
+    agg = agg.merge(
+        _published_log2fc(volcano), on=["uniprot", "condition"], how="left"
+    )
     agg = agg.merge(_d2_below_detection(), on=["uniprot", "condition"], how="left")
     agg["d2_below_detection"] = agg["d2_below_detection"].notna()
     agg["condition"] = pd.Categorical(
@@ -452,7 +513,7 @@ def build_proteome() -> pd.DataFrame:
     agg = agg.sort_values(["symbol", "condition"])
     return agg[
         ["uniprot", "symbol", "condition", "percent_control", "log2fc",
-         "n_reps", "d2_below_detection"]
+         "published_log2fc", "n_reps", "d2_below_detection"]
     ]
 
 
@@ -1195,9 +1256,11 @@ reactivity_5cond.csv
     per cysteine of a protein (used for the dot-plot expression triangles). It is
     the manuscript's own whole-proteome aggregate: the MEDIAN over technical
     channels, each divided by its biological replicate's D2 mean. Note this is a
-    different statistic from whole_proteome.csv above, which reports the MEAN
-    over biological replicates — expect the two to differ by ~0.035 log2 for most
-    proteins. The sole exception is where the upstream median is non-finite (a D2
+    different statistic from the {cond}_log2fc columns of whole_proteome.csv
+    above, which are the sheet's published differential-expression estimates and
+    what the portal's abundance bars draw — expect the two to differ by ~0.035
+    log2 for most proteins, and by up to 1.8 (HBB D8C) where a channel was below
+    detection. The sole exception is where the upstream median is non-finite (a D2
     reference of zero): there wp_log2fc is recomputed with that channel censored
     at the limit of detection, which would otherwise leave the triangle missing.
     columns: uniprot, symbol, residue, residue_loc, [sequence], condition,
@@ -1290,15 +1353,19 @@ def main() -> int:
         d.mkdir(parents=True, exist_ok=True)
 
     print("Building modality tables...")
+    # The volcano is built first and handed to build_proteome, which carries its
+    # log2FC as `published_log2fc` — the column the abundance bars draw. One
+    # build, so the bar and the volcano x-axis cannot come from different reads.
+    volcano = build_volcano()
     tables = {
-        "proteome": build_proteome(),
+        "proteome": build_proteome(volcano),
         "proteome_replicates": build_proteome_replicates(),
         "rna": build_rna(),
         "rna_replicates": build_rna_replicates(),
         "reactivity": build_reactivity(),
         "reactivity_atp": build_reactivity_atp(),
         "metabolomics": build_metabolomics(),
-        "volcano": build_volcano(),
+        "volcano": volcano,
         "rna_volcano": build_rna_volcano(),
     }
 

@@ -20,7 +20,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # part of the suite asserts against the committed parquet rather than
+          # a fixture, so the LFS objects have to be here too (see build below).
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
   build:
+    # a failing suite must not reach Pages
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

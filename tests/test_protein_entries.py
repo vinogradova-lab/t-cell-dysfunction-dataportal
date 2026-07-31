@@ -116,10 +116,15 @@ def test_no_slice_ever_holds_two_proteins(store):
 def test_the_bar_is_one_protein_not_the_mean_of_two(store):
     """The regression guard, asserted on what is actually drawn.
 
-    A whole-proteome bar is the mean of its replicates. Keyed on symbol, the
-    replicate slice for "TMPO" held both proteins' 24 channel rows and the D8C
-    bar drew their pooled mean, 0.531 — a value belonging to neither protein.
-    Each entry must now draw its own 12 rows.
+    Keyed on symbol, the slices for "TMPO" held both proteins at once: the
+    replicate overlay drew all 24 channel rows, and the bar — then the mean of
+    those rows — drew their pooled 0.531, a value belonging to neither protein.
+    Each entry must now draw its own row and its own 12 channels.
+
+    The bar is the published log2FC rather than that mean now (see
+    tests/test_proteome_figure.py), so the pooling would no longer reach it
+    through the replicates — but the same symbol-keyed slice would still hand
+    the figure two rows, which is what these values pin.
     """
     d8c = pl.col("condition") == "D8C"
     pooled = store.tables["proteome_replicates"].filter(
@@ -132,14 +137,14 @@ def test_the_bar_is_one_protein_not_the_mean_of_two(store):
     for uniprot in ("P42166", "P42167"):
         reps = store.replicates("proteome", "TMPO", uniprot)
         assert reps.filter(d8c).height == 12, "replicates must be one protein's"
-        fig = BUILDERS["proteome"](
-            store.slice("proteome", "TMPO", uniprot), uniprot, reps
-        )
+        slice_ = store.slice("proteome", "TMPO", uniprot)
+        assert slice_.height == 5, "one protein's rows, one per condition"
+        fig = BUILDERS["proteome"](slice_, uniprot, reps)
         bar = next(t for t in fig.data if t.type == "bar")
         drawn[uniprot] = dict(zip(bar.x, bar.y))["D8C"]
 
-    assert round(drawn["P42166"], 3) == 0.746
-    assert round(drawn["P42167"], 3) == 0.316
+    assert round(drawn["P42166"], 3) == 0.741
+    assert round(drawn["P42167"], 3) == 0.328
     for value in drawn.values():
         assert round(value, 3) != 0.531
 

@@ -106,13 +106,14 @@
         D4/D8 &times; Acute (A) / Chronic (C).
         Reactivity ATP add-back adds ±ATP variants.</p>
       <p>Expression is the median over replicates in the cysteine reactivity
-        plots, and the mean over replicates for the whole proteome expression
-        plots.</p>
-      <p>Whole proteome bars are the mean of the replicates drawn over them,
-        with error bars of &plusmn;1 SEM over those replicates. RNA bars are
-        DESeq2's estimate rather than the mean of their points, so their error
-        bars are &plusmn;1 <code>lfcSE</code>, DESeq2's own standard error for
-        that estimate.</p>
+        plots, and the published fold change for the whole proteome expression
+        plots. The two are different statistics and can disagree.</p>
+      <p>Whole proteome and RNA bars draw the published fold change, so each bar
+        matches that protein's or gene's volcano position. The replicate points
+        over them are supporting evidence, not what sets the bar. RNA error bars
+        are &plusmn;1 <code>lfcSE</code>; whole proteome error bars are
+        &plusmn;1 SEM of the plotted points. A replicate below detection is a
+        bound rather than a measurement.</p>
       <p>In the cysteine reactivity ATP add-back plots, the box spans the
         interquartile range with the line at the median, and the whiskers reach
         the furthest replicates within 1.5&times; the IQR.</p>

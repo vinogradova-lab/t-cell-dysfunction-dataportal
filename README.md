@@ -46,24 +46,39 @@ written; S1-1 has only the four vs-D2 contrasts.
 
 ### Protein abundance
 
-Two aggregates are in play and are **not** interchangeable. Both start from the
-same per-channel percent-of-control — every technical channel over its own
-biological replicate's D2 mean — and differ only in how they collapse it. The
-whole-proteome tab takes a **mean over all channels**, nested: the two technical
-channels are averaged within each donor, then those donor means are averaged.
-The reactivity dot plot's expression triangles take the manuscript's **median
-over all technical channels**, flat, ignoring the donor grouping. The two land
-~0.035 log₂ apart for most proteins. Censoring applies at whichever level does
-the collapsing, so a channel below detection is floored on its own in the median
-form but first diluted through its donor mean in the other.
+A protein's abundance bar *is* its volcano x-position: both read S2-1's published
+`log2_FC` from one column (`proteome.published_log2fc` = `volcano.log2fc`), so the
+two cannot drift apart. AFAP1L2 D8C, the one cell with no published value, draws a
+**gap**, not a zero.
+
+Two other proteome fold changes exist and are **not** interchangeable with it.
+`proteome.log2fc` — log₂ of the mean donor ratio — is portal-internal, appears in
+no published artifact, and averages ratios outside the log, which biases it upward
+by Jensen's inequality on every cell, increasingly with effect size (+0.33 log₂ at
+the largest). The reactivity dot plot's expression triangles are the manuscript's
+own aggregate, the **median over technical channels**; they land ~0.035 log₂ from
+the bar, and up to 1.8 (HBB D8C).
+
+The replicate dots over the bar are supporting evidence, not what sets it: **per
+technical channel**, two per donor, each over its own donor's D2 mean, so they show
+measurement spread rather than donor means. Their mean tracks the published value
+to a median of 0.005 log₂.
 
 A TMT channel reading exactly 0 means *below detection*, not *absent*: it is
 censored at the replicate's limit of detection (1st percentile of its positive
-census values), so the value is a bound. Channels empty in both the condition and
-its reference are dropped, and `n_reps` records the surviving donors (AFAP1L2
-rests on one). Abundance dots are **per technical channel** — two per donor, the
-bar being their mean — so they show measurement spread, not donor means. The
-volcano further **omits** any comparison whose reference channel was below
+census values), so the value is a bound — upper on the loss when the condition
+channel was empty, lower on the increase when the D2 reference was. Channels empty
+on both sides are dropped, and `n_reps` records the surviving donors (AFAP1L2 rests
+on one). Censoring applies at whichever level does the collapsing, so a channel is
+floored on its own in the median form but first diluted through its donor mean in
+the other.
+
+This is why a few bars sit off their own dots: a floored point cannot fall below
+the limit of detection, while the published estimate used the raw zero and can.
+F13A1 D8A draws −4.08 over channels spanning −2.93…−2.63; F13A1, HBB and TNFRSF4
+are the whole list, annotated from the `censored` flag on `proteome_replicates`.
+
+The volcano further **omits** any comparison whose reference channel was below
 detection, since dividing by a mean that averaged in a raw zero inflates the
 published fold change (AFAP1L2 D8C by ~1.19 log₂); those proteins keep their
 per-gene view with the caveat annotated.
@@ -91,9 +106,14 @@ counts normalized with median-of-ratios size factors (`build_db._size_factors` �
 the ETL takes no R dependency and reproduces only that step). They track the bar
 to a median of 0.002 log₂ above baseMean 100. **Do not read their spread as the
 error bar**: the SEM of three treatment samples about their own mean ignores the
-D2 reference's own uncertainty and runs ~1.9× under `lfcSE`. Whole-proteome bars
-are the reverse — there the bar really is the replicate mean, so ±1 SEM of the
-plotted points is right.
+D2 reference's own uncertainty and runs ~1.9× under `lfcSE`.
+
+Whole-proteome bars *do* carry a replicate SEM, S2-1 publishing no standard error
+to use instead. It avoids the problem above — those points are already per-donor
+ratios, so the reference sits inside every one — but read it as the spread of the
+plotted channels, **not** as the bar's uncertainty: pooling a donor's two
+technical channels as independent makes it narrower than a donor-level SEM by at
+least √2.
 
 ## Build & run
 
