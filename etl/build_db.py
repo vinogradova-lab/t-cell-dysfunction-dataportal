@@ -597,15 +597,23 @@ def build_rna_replicates() -> pd.DataFrame:
         )
     out = pd.concat(rows, ignore_index=True).dropna(subset=["log2fc"])
     out = _keep_protein_coding(out)
+    # Same restriction build_rna applies, so replicate points can never outlive
+    # the bar they scatter over — and rna_replicates.csv covers the same genes as
+    # rna.csv. Counts exist here for genes S1-1 never reported on either; those
+    # orphans predate this filter and are left alone.
+    out = out[~out["symbol"].isin(unquantified_rna_symbols())]
     out["condition"] = pd.Categorical(out["condition"], categories=order, ordered=True)
     out = out.sort_values(["symbol", "condition", "rep"])
     return out[["symbol", "condition", "rep", "log2fc"]]
 
 
-def build_rna() -> pd.DataFrame:
+def _rna_deseq_long() -> pd.DataFrame:
     """Bulk RNA-seq DESeq2 results vs D2 -> long table, one row per (gene x
     condition). Source is S1-1, wide: one block of ``baseMean_/log2FoldChange_/
     padj_<cond>_vs_D2`` columns per comparison.
+
+    Everything S1-1 reports, including the genes DESeq2 never tested. Callers
+    want :func:`build_rna`, which drops those.
     """
     df = load_s1_1().rename(columns={"gene_name": "symbol"})
     frames = []
@@ -632,6 +640,41 @@ def build_rna() -> pd.DataFrame:
         rna["condition"], categories=FOUR_COMPARISONS, ordered=True
     )
     return rna
+
+
+@lru_cache(maxsize=1)
+def unquantified_rna_symbols() -> frozenset[str]:
+    """Genes the transcriptome never measured: ``padj`` null in *every*
+    comparison, DESeq2's independent filtering having dropped them for want of
+    counts. Absent measurements, not low-confidence ones — the 1,909 carry a
+    median lfcSE of 4.73 against the 15,527 quantified genes' 0.095, a ±27-fold
+    interval that makes any fold change indistinguishable from any other.
+
+    Keyed on DESeq2's verdict rather than a baseMean threshold because the two
+    groups overlap (0.89 to 19), so a cutoff would both keep noise and discard
+    real genes. All-or-nothing per gene: the four comparisons share one fit, so
+    no bar chart is left half-populated.
+
+    For the 129 also seen by MS (CCL5, CD99, PSMC4 …) a near-zero baseMean is a
+    counting artifact — raw counts split across chr17 and unplaced alt contigs —
+    so those pages say the transcript was not quantified rather than implying it
+    was not expressed.
+    """
+    rna = _rna_deseq_long()
+    null_everywhere = rna.groupby("symbol")["padj"].apply(lambda s: s.isna().all())
+    return frozenset(null_everywhere.index[null_everywhere])
+
+
+def build_rna() -> pd.DataFrame:
+    """:func:`_rna_deseq_long` minus the genes DESeq2 never tested.
+
+    One filter, applied here at the source, so every consumer inherits it: the
+    volcano, the per-gene bar chart, the ``rna.csv`` download, and the gene
+    registry (a gene with no other modality stops being a page at all).
+    """
+    rna = _rna_deseq_long()
+    keep = ~rna["symbol"].isin(unquantified_rna_symbols())
+    return rna[keep].reset_index(drop=True)
 
 
 def build_reactivity() -> pd.DataFrame:
@@ -902,6 +945,9 @@ def build_rna_volcano() -> pd.DataFrame:
     out = rna[rna["symbol"].isin(matched)].copy()
     # DESeq2 leaves padj null wherever independent filtering removed the gene
     # from the multiplicity correction; those genes have no y-position.
+    # build_rna already drops them dataset-wide (unquantified_rna_symbols), so
+    # this now bites only on the S2-2 D8C-vs-D8A block, which comes from its own
+    # sheet and does not go through that filter.
     out = out.dropna(subset=["log2fc", "padj"]).reset_index(drop=True)
 
     # A padj of exactly 0 (underflow) would plot at +inf, which parquet and
@@ -1238,6 +1284,12 @@ rna.csv
     with its dispersion shrunk toward the transcriptome-wide mean-dispersion
     trend. It does not shrink to zero with sequencing depth: at high counts it is
     dominated by biological overdispersion, not counting noise.
+    Genes DESeq2 never tested are excluded: where independent filtering removed a
+    gene from the multiplicity correction its padj is null in all four
+    comparisons, and the accompanying log2fc is unconstrained (median lfcSE 4.73,
+    a ±27-fold interval). 1,909 of 17,436 genes are dropped on this rule; they
+    carry no usable fold change, so they are absent here rather than present with
+    a null padj. Genes retained all have a padj in every comparison.
     columns: symbol, condition, log2fc, lfc_se, padj, base_mean
 
 rna_replicates.csv
@@ -1247,7 +1299,7 @@ rna_replicates.csv
     agree closely with the model-based DESeq2 log2fc in rna.csv (median absolute
     difference 0.002 for genes with baseMean > 100); expect them to diverge for
     very low-count genes, where the GLM estimate and a raw count ratio legitimately
-    differ. Protein-coding genes only (as rna.csv).
+    differ. Protein-coding genes only, and restricted to the genes rna.csv keeps.
     columns: symbol, condition, rep, log2fc
 
 reactivity_5cond.csv
@@ -1395,6 +1447,14 @@ def main() -> int:
     rna_only["description"] = pd.NA
     seed = pd.concat([seed, rna_only], ignore_index=True)
     tables["genes"] = build_gene_registry(seed)
+    # A per-gene fact, so it rides on the per-gene table rather than a table of
+    # its own. True only for the 129 genes that lost their RNA rows but kept a
+    # page on the strength of another modality — it is what lets that page say
+    # "not quantified" instead of silently dropping the transcript card. Genes
+    # dropped with nothing else are not in the registry at all, so never True.
+    tables["genes"]["rna_unquantified"] = (
+        tables["genes"]["symbol"].isin(unquantified_rna_symbols())
+    )
 
     print("Writing parquet tables...")
     for name, df in tables.items():

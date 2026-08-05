@@ -111,7 +111,7 @@ pointer files where the tables should be and `Store()` refuses to start.
 pip install -r requirements.txt
 python scripts/sync_source.py                   # stage inputs into source/
 python etl/build_db.py                          # -> data/parquet + data/downloads
-python etl/prerender.py --out site --limit 200  # drop --limit for all ~17.5k genes
+python etl/prerender.py --out site --limit 200  # drop --limit for all ~15.8k genes
 cd site && python -m http.server 8099           # http://127.0.0.1:8099
 ```
 

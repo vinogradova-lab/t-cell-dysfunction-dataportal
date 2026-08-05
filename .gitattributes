@@ -3,8 +3,11 @@
 # keeps that churn out of the pack. Existing blobs stay in history; this only
 # stops the growth.
 #
-# CI must fetch them: .github/workflows/pages.yml sets `lfs: true` on checkout,
-# because actions/checkout does NOT pull LFS objects by default. Without it the
-# build sees pointer files and Store() fails (with the message it raises for
-# exactly this case).
+# CI must fetch them, because actions/checkout does NOT pull LFS objects by
+# default. Without them the build sees pointer files and Store() fails (with the
+# message it raises for exactly this case). .github/workflows/pages.yml does NOT
+# use checkout's `lfs: true` — it caches .git/lfs keyed on a hash of the pointer
+# files and runs `git lfs pull` only on a miss, so unchanged tables cost no LFS
+# bandwidth. Leaving checkout at lfs: false is load-bearing there: the pointer
+# files on disk are what the cache key hashes.
 data/parquet/*.parquet filter=lfs diff=lfs merge=lfs -text

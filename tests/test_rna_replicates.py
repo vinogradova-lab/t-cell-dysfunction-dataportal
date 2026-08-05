@@ -60,7 +60,13 @@ def _counts_frame(rows: dict[str, list[float]]) -> pd.DataFrame:
 @pytest.fixture
 def stub(monkeypatch, tmp_path):
     """Point the loader at a synthetic counts file and let every gene through
-    the protein-coding filter (which otherwise reads the 12 MB NCBI table)."""
+    the protein-coding filter (which otherwise reads the 12 MB NCBI table).
+
+    ``unquantified_rna_symbols`` is stubbed empty for the same reason: it reads
+    S1-1 out of ``SOURCE``, which these tests have redirected to a tmp dir
+    holding nothing but the counts file. The normalization under test here is
+    independent of that filter — see test_rna_unquantified.py for the filter.
+    """
 
     def _install(rows: dict[str, list[float]]) -> None:
         path = tmp_path / "rna_counts_raw.txt"
@@ -68,6 +74,9 @@ def stub(monkeypatch, tmp_path):
         monkeypatch.setattr(build_db, "SOURCE", tmp_path)
         monkeypatch.setattr(
             build_db, "protein_coding_symbols", lambda: frozenset(rows)
+        )
+        monkeypatch.setattr(
+            build_db, "unquantified_rna_symbols", lambda: frozenset()
         )
 
     return _install

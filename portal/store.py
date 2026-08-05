@@ -86,7 +86,7 @@ class Store:
         1 accession   ->  id = "ACTB"          label = "ACTB"
         several       ->  id = "TMPO.P42166"   label = "TMPO (P42166)"
 
-    17,543 of 17,553 entries take the first branch, unchanged from the old
+    15,763 of 15,773 entries take the first branch, unchanged from the old
     symbol-keyed behaviour. The rule lives here alone; prerender, figures and
     app.js all consume what this computes.
     """
@@ -138,8 +138,9 @@ class Store:
 
         # one entry per registry row, in registry order
         meta_cols = ["symbol", "uniprot", "description", "aliases"]
-        if "uniprot_function" in genes.columns:
-            meta_cols.append("uniprot_function")
+        for optional in ("uniprot_function", "rna_unquantified"):
+            if optional in genes.columns:
+                meta_cols.append(optional)
         self._entries: list[dict] = []
         for r in genes.select(meta_cols).iter_rows(named=True):
             symbol, uniprot = r["symbol"], r["uniprot"]
@@ -154,6 +155,9 @@ class Store:
                     "aliases": r["aliases"] or "",
                     "uniprot_function": r.get("uniprot_function") or "",
                     "modalities": self.modalities_for(symbol, uniprot),
+                    # sequenced but never quantified, so "rna" is absent from
+                    # modalities for a reason the page can state
+                    "rna_unquantified": bool(r.get("rna_unquantified")),
                 }
             )
         self._by_entry = {e["id"]: e for e in self._entries}

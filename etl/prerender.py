@@ -12,7 +12,7 @@ Usage:
     python etl/prerender.py [--limit N] [--out site]
 
 ``--limit`` renders only the first N genes (for a quick smoke build); omit it
-for the full ~17.5k-gene site.
+for the full ~15.8k-gene site.
 
 Runs off the committed parquet only — it does **not** need the ``source/``
 workbooks. The combined ``whole_proteome.csv`` download is reconstructed from
@@ -67,7 +67,7 @@ def write_genes_index(store: Store, api_dir: Path) -> list[dict]:
     """Write the search index — one record per *protein* — and return the entries.
 
     ``id``/``label`` are emitted only where they differ from ``symbol`` (10
-    entries of 17,553); the client defaults both to the symbol. Writing them on
+    entries of 15,773); the client defaults both to the symbol. Writing them on
     every record would add ~500 KB to a file that already costs 563 KB gzipped
     before search works.
     """
@@ -117,6 +117,10 @@ def write_gene_bundles(
         # frontend's modality loop ignores it); kept out of the always-loaded
         # genes.json index because the function text is large.
         bundle["uniprot_function"] = e["uniprot_function"]
+        # Only emitted where true (129 of 15,773 bundles), so the common case pays
+        # nothing for it. The frontend treats a missing key as false.
+        if e["rna_unquantified"]:
+            bundle["rna_unquantified"] = True
         (gene_dir / f"{_safe_key(e['id'])}.json").write_text(
             json.dumps(bundle, separators=(",", ":"))
         )

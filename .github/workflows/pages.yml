@@ -23,11 +23,41 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # part of the suite asserts against the committed parquet rather than a
+      # fixture, so the LFS objects have to be here too (see build below).
+      # They arrive via the cache below rather than checkout's `lfs: true`:
+      # parquet is incompressible by git, so re-fetching ~25 MB on every job
+      # burned the account's LFS bandwidth quota. Leaving checkout at the
+      # default (lfs: false) is deliberate -- it leaves the pointer files on
+      # disk, which is what the cache key hashes.
       - uses: actions/checkout@v7
+      - name: Cache LFS objects
+        id: lfs-cache
+        uses: actions/cache@v4
         with:
-          # part of the suite asserts against the committed parquet rather than
-          # a fixture, so the LFS objects have to be here too (see build below).
-          lfs: true
+          path: .git/lfs
+          # the checked-out parquet are LFS pointer files containing the object
+          # oid, so this hash changes exactly when the underlying data changes
+          key: lfs-${{ hashFiles('data/parquet/*.parquet') }}
+          # a partial hit seeds .git/lfs with a previous run's objects, so the
+          # pull below downloads only the tables that actually changed
+          restore-keys: lfs-
+      # cache-hit is 'true' only on an exact key match; a restore-keys hit
+      # reports 'false' and correctly lands here, where pull consults the local
+      # object store first and fetches only the missing oids.
+      - name: Fetch changed LFS objects
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        run: |
+          git lfs pull
+          # drop objects restored from an older cache that HEAD no longer
+          # references, else the saved cache grows without bound. Not -f:
+          # --force also prunes objects required for the current checkout,
+          # which would empty the cache we are about to save.
+          git lfs prune
+      # purely local: materializes pointers from .git/lfs/objects, no network
+      - name: Restore LFS objects from cache
+        if: steps.lfs-cache.outputs.cache-hit == 'true'
+        run: git lfs checkout
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -40,12 +70,28 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
+      # data/parquet/ is tracked in LFS (.gitattributes) and prerender reads it
+      # directly, so without the steps below the build gets pointer files
+      # instead of tables. Same cache dance as the test job above -- and since
+      # this job `needs: test`, it runs on the same commit and resolves to the
+      # same key, so it hits the cache test just populated and transfers
+      # nothing even on a cold run.
       - uses: actions/checkout@v7
+      - name: Cache LFS objects
+        id: lfs-cache
+        uses: actions/cache@v4
         with:
-          # data/parquet/ is tracked in LFS (.gitattributes) and prerender reads
-          # it directly. checkout does not fetch LFS objects by default, so
-          # without this the build gets pointer files instead of tables.
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ hashFiles('data/parquet/*.parquet') }}
+          restore-keys: lfs-
+      - name: Fetch changed LFS objects
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        run: |
+          git lfs pull
+          git lfs prune
+      - name: Restore LFS objects from cache
+        if: steps.lfs-cache.outputs.cache-hit == 'true'
+        run: git lfs checkout
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

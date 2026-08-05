@@ -286,6 +286,21 @@ async function selectGene(name, updateUrl = true) {
   // spilled behind the next card. Appending all cards first means each plot
   // measures its final multi-column track width. Do NOT collapse back into one loop.
   const pending = [];
+  // Sits where the transcriptomics card would be (rna leads MODALITY_ORDER, and
+  // an unquantified gene by definition has no rna figure). Without it the card
+  // simply vanishes, which reads as "not measured" for a gene that was in fact
+  // sequenced — and for CCL5, PSMC4 and the like, whose protein is detected
+  // right beside it, that silence is actively misleading.
+  if (bundle.rna_unquantified) {
+    const card = document.createElement("div");
+    card.className = "chart-card";
+    card.innerHTML =
+      `<h3 class="chart-title">${MODALITY_LABEL.rna} — ${escapeHtml(meta.label)}</h3>` +
+      `<p class="no-data">Transcript not quantified. DESeq2's independent` +
+      ` filtering removed it from the differential-expression fit due to low` +
+      ` counts.</p>`;
+    chartsEl.appendChild(card);
+  }
   for (const m of available) {
     const fig = bundle[m];
     if (!fig) continue; // modality present in index but empty slice
